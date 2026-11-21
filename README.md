@@ -20,7 +20,9 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
 | Indietro | chiude il riquadro; due volte per uscire | chiude il pannello |
 | ⏯ | ricarica il canale | |
 
-- **Elenchi**: si possono attivare **più elenchi insieme** (caselle di spunta), divisi in quattro sezioni come
+- **Elenchi**: si possono attivare **più elenchi insieme** (caselle di spunta, salvate subito: nessun pulsante di
+  conferma, Indietro torna su e all'uscita i canali si ricaricano; in cima a ogni sezione *Seleziona tutti /
+  deseleziona tutti*), divisi in quattro sezioni come
   nell'addon: *Liste WLTV* (DTT, Vari, Regionali, Radio, Pluto TV, Samsung TV, Rakuten, WeDoTv…), *TV dal mondo*
   (un elenco per paese, liste iptv-org), *Webcam* (SkylineWebcams per paese) e *Radio dal mondo* (per paese), più un
   **URL personalizzato** di una lista M3U. Il predefinito è *DTT*. I canali di tutti gli elenchi attivi finiscono

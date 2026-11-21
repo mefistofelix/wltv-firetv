@@ -101,8 +101,18 @@ object Lists {
         return seen.entries.map { it.key to it.value }.sortedBy { it.second }
     }
 
+    /** Parsed resource kept in memory: "select all" loads dozens of sources out of the same file. */
+    private val parsed = HashMap<String, Pair<Long, JSONObject>>()
+
+    private fun obj(c: Context, name: String): JSONObject? = synchronized(parsed) {
+        val f = File(c.filesDir, "res_" + safe(name) + ".json")
+        parsed[name]?.let { if (it.first == f.lastModified()) return it.second }
+        val text = resource(c, name, false) ?: return null
+        JSONObject(text).also { parsed[name] = f.lastModified() to it }
+    }
+
     private fun worldUrl(c: Context, code: String): String? {
-        val j = JSONObject(resource(c, "ListWorldTv.bin", false) ?: return null)
+        val j = obj(c, "ListWorldTv.bin") ?: return null
         for (region in j.getJSONArray("worlditems").objects()) for (cty in region.optJSONArray("worlditems").objects()) {
             if (cty.optString("code").equals(code, true)) return String(Base64.decode(cty.optString("url"), Base64.DEFAULT))
         }
@@ -147,7 +157,7 @@ object Lists {
     }
 
     private fun camChannels(c: Context, country: String, label: String): List<Channel> {
-        val j = JSONObject(resource(c, "ListSkyLineWebcam.bin", false) ?: return emptyList())
+        val j = obj(c, "ListSkyLineWebcam.bin") ?: return emptyList()
         val out = ArrayList<Channel>()
         for (cont in j.getJSONArray("worlditems").objects()) for (cty in cont.optJSONArray("worlditems").objects()) {
             if (cty.optString("name") != country) continue
@@ -171,7 +181,8 @@ object Lists {
         val country = j.getJSONArray("countries").optJSONObject(0) ?: return out
         for (place in country.optJSONArray("places").objects()) for (r in place.optJSONArray("channels").objects()) {
             if (!r.optBoolean("enabled", true)) continue
-            out += Channel(r.optString("title"), r.optString("url"), out.size + 1, place.optString("name"), "", "", label)
+            // one group per country: a country has hundreds of towns, too many groups for the left column
+            out += Channel(r.optString("title"), r.optString("url"), out.size + 1, label, "", "", label)
         }
         return out
     }

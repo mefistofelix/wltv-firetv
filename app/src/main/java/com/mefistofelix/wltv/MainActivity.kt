@@ -194,7 +194,8 @@ class MainActivity : Activity() {
             val all = ArrayList<Channel>()
             val titles = ArrayList<String>()
             var failed = 0
-            for (id in sorted) {
+            for ((i, id) in sorted.withIndex()) {
+                if (sorted.size > 3) ui.post { status("Carico elenchi ${i + 1}/${sorted.size}…") }
                 val stale = !refresh && System.currentTimeMillis() - prefs.getLong("loaded_$id", 0) > 24 * 3600_000L
                 var list = Lists.load(this, id, refresh || stale)
                 if (list == null && !(refresh || stale)) list = Lists.load(this, id, true)
@@ -537,68 +538,92 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ list chooser
 
-    /** Sections → multi-choice lists of sources; nothing changes until "Applica". */
+    /**
+     * Sections → lists of sources with checkboxes. No confirm buttons: every tick is saved at once, Back goes up
+     * one level, and leaving the sections reloads the channels if anything changed.
+     */
     private fun chooseLists() {
         status("Scarico gli elenchi disponibili…")
         net.execute {
             val cat = Lists.catalog(this, true)
             ui.post {
                 status("")
-                sectionsDialog(cat, Lists.selected(this).toMutableSet())
+                val before = Lists.selected(this)
+                sectionsDialog(cat, before.toMutableSet(), before)
             }
         }
     }
 
-    private fun sectionsDialog(cat: Map<String, List<Lists.Source>>, chosen: MutableSet<String>) {
+    private fun sectionsDialog(cat: Map<String, List<Lists.Source>>, chosen: MutableSet<String>, before: Set<String>) {
         val sections = Lists.SECTIONS.filter { cat[it]?.isNotEmpty() == true }
         val labels = sections.map { s ->
             val n = cat[s]!!.count { it.id in chosen }
             "$s  ·  ${cat[s]!!.size} elenchi" + if (n > 0) "  ·  $n attivi" else ""
         } + ("URL personalizzato…" + if (Lists.CUSTOM in chosen) "  ·  attivo" else "")
+        var next = false // a sub-dialog opens: not leaving yet
         AlertDialog.Builder(this)
             .setTitle("Elenchi canali (${chosen.size} attivi)")
             .setItems(labels.map { it as CharSequence }.toTypedArray()) { _, which ->
-                if (which < sections.size) sourcesDialog(cat, sections[which], chosen) else askCustomUrl(cat, chosen)
+                next = true
+                if (which < sections.size) sourcesDialog(cat, sections[which], chosen, before) else askCustomUrl(cat, chosen, before)
             }
-            .setPositiveButton("Applica") { _, _ -> applyLists(chosen) }
-            .setNegativeButton("Annulla", null)
+            .setOnDismissListener { if (!next && chosen != before) reloadSources() }
             .show()
     }
 
-    private fun sourcesDialog(cat: Map<String, List<Lists.Source>>, section: String, chosen: MutableSet<String>) {
+    /** First row ticks or clears the whole section; each tick is saved right away. */
+    private fun sourcesDialog(cat: Map<String, List<Lists.Source>>, section: String, chosen: MutableSet<String>, before: Set<String>) {
         val items = cat[section]!!
-        val checked = BooleanArray(items.size) { items[it].id in chosen }
-        AlertDialog.Builder(this)
-            .setTitle(section)
-            .setMultiChoiceItems(items.map { it.title as CharSequence }.toTypedArray(), checked) { _, which, on ->
-                if (on) chosen += items[which].id else chosen -= items[which].id
+        fun allOn() = items.all { it.id in chosen }
+        val labels = listOf<CharSequence>("Seleziona tutti / deseleziona tutti") + items.map { it.title }
+        val checked = BooleanArray(items.size + 1) { if (it == 0) allOn() else items[it - 1].id in chosen }
+        lateinit var dialog: AlertDialog
+        dialog = AlertDialog.Builder(this)
+            .setTitle("$section (${items.count { it.id in chosen }}/${items.size})")
+            .setMultiChoiceItems(labels.toTypedArray(), checked) { _, which, on ->
+                // AlertDialog re-reads [checked] for rows scrolled into view: keep it in step with the list view
+                if (which == 0) {
+                    if (on) items.forEach { chosen += it.id } else items.forEach { chosen -= it.id }
+                    for (i in items.indices) {
+                        checked[i + 1] = on; dialog.listView.setItemChecked(i + 1, on)
+                    }
+                } else {
+                    if (on) chosen += items[which - 1].id else chosen -= items[which - 1].id
+                    checked[0] = allOn(); dialog.listView.setItemChecked(0, checked[0])
+                }
+                Lists.setSelected(this, chosen)
+                dialog.setTitle("$section (${items.count { it.id in chosen }}/${items.size})")
             }
-            .setPositiveButton("OK") { _, _ -> sectionsDialog(cat, chosen) }
-            .setOnCancelListener { sectionsDialog(cat, chosen) }
-            .show()
+            .setOnDismissListener { sectionsDialog(cat, chosen, before) }
+            .create()
+        dialog.show()
     }
 
-    private fun askCustomUrl(cat: Map<String, List<Lists.Source>>, chosen: MutableSet<String>) {
+    /** Address of an M3U list: saved when the dialog is left (Back or the keyboard's Go); empty = off. */
+    private fun askCustomUrl(cat: Map<String, List<Lists.Source>>, chosen: MutableSet<String>, before: Set<String>) {
+        lateinit var dialog: AlertDialog
         val field = EditText(this).apply {
             setText(Lists.customUrl(this@MainActivity))
             hint = "https://…/lista.m3u (vuoto = nessuna)"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            imeOptions = EditorInfo.IME_ACTION_DONE
             setSingleLine()
+            setOnEditorActionListener { _, _, _ -> dialog.dismiss(); true }
         }
-        AlertDialog.Builder(this).setTitle("Indirizzo di una lista M3U").setView(field)
-            .setPositiveButton("OK") { _, _ ->
+        dialog = AlertDialog.Builder(this).setTitle("Indirizzo di una lista M3U").setView(field)
+            .setOnDismissListener {
                 val u = field.text.toString().trim()
                 if (u.startsWith("http")) {
                     Lists.setCustomUrl(this, u); chosen += Lists.CUSTOM
                 } else chosen -= Lists.CUSTOM
-                sectionsDialog(cat, chosen)
+                Lists.setSelected(this, chosen)
+                sectionsDialog(cat, chosen, before)
             }
-            .setOnCancelListener { sectionsDialog(cat, chosen) }
-            .show()
+            .create()
+        dialog.show()
     }
 
-    private fun applyLists(chosen: Set<String>) {
-        Lists.setSelected(this, chosen)
+    private fun reloadSources() {
         search.setText("")
         groupPos = 0
         groups = emptyList()
