@@ -83,7 +83,7 @@ class MainActivity : Activity() {
     private var digits = ""
     private var menuLongHandled = false
     private var backAt = 0L
-    private var ticks = 0
+    private var groupPos = 0
 
     private val groupAdapter = RowAdapter { pos -> groups[pos] }
     private val channelAdapter = RowAdapter { pos ->
@@ -135,8 +135,6 @@ class MainActivity : Activity() {
     private val tick = object : Runnable {
         override fun run() {
             current?.let { if (player.isPlaying) stats.add(it, 1) }
-            if (++ticks % 15 == 0) Log.d(tag, "tick state=${player.playbackState} pwr=${player.playWhenReady} " +
-                "playing=${player.isPlaying} sup=${player.playbackSuppressionReason} sec=${current?.let { stats.of(it) }}")
             ui.postDelayed(this, 1000)
         }
     }
@@ -195,6 +193,7 @@ class MainActivity : Activity() {
     }
 
     private fun showGroup(pos: Int) {
+        groupPos = pos
         if (search.text.isNotEmpty()) return
         shown = when (groups.getOrNull(pos)) {
             TOP -> stats.top(channels)
@@ -345,6 +344,15 @@ class MainActivity : Activity() {
             }
         } else if (code == KeyEvent.KEYCODE_BACK) {
             if (current != null) hidePanel() else finish()
+            return true
+        } else if (code == KeyEvent.KEYCODE_DPAD_LEFT && channelList.hasFocus()) {
+            // ListView would pick the group row next to the focused channel: keep the group being shown
+            val keep = groupPos
+            groupList.requestFocus()
+            ui.post {
+                val v = groupList.getChildAt(keep - groupList.firstVisiblePosition)
+                groupList.setSelectionFromTop(keep, v?.top ?: 0)
+            }
             return true
         }
         return super.dispatchKeyEvent(event)

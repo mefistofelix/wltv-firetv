@@ -543,7 +543,7 @@ object Resolver {
 
     private fun tv2000(): Stream {
         val xml = Http.get("https://data.meride.tv/proxy/bulkproxynew/embedproxy_bulk.php/4Y3ZMmvcvo/play2000/desktop/preroll-play2000/f4m/default/aHR0cHM6Ly93d3cucGxheTIwMDAuaXQvKg==")
-        val video = Http.match(xml, """<video>(.*?)</video>""")
+        val video = Http.match(xml, """<video\b[^>]*>(.*?)</video>""")
         return Stream(Http.match(video, """<default>\s*(?:<!\[CDATA\[)?\s*(.*?)\s*(?:\]\]>)?\s*</default>"""))
     }
 
