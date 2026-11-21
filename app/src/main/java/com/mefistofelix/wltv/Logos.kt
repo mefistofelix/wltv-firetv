@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.LruCache
 import android.widget.ImageView
+import okhttp3.Request
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
