@@ -1,0 +1,158 @@
+package com.mefistofelix.wltv
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Typeface
+import android.os.Handler
+import android.os.Looper
+import android.util.LruCache
+import android.widget.ImageView
+import okhttp3.Request
+import org.json.JSONObject
+import org.tukaani.xz.XZInputStream
+import java.io.File
+import java.security.MessageDigest
+import java.util.concurrent.Executors
+
+/**
+ * Channel logos. The list's own tvg-logo wins; otherwise the icon of the WLTV EPG (epg-guide.com/wltv.xz, what Kodi's
+ * IPTV Simple Client shows with "logo from EPG") found by tvg-id, then by channel name; otherwise a tile with the
+ * initials. Downloaded images are kept in files/logos, decoded small and held in a memory cache.
+ */
+class Logos(private val context: Context) {
+    private val ui = Handler(Looper.getMainLooper())
+    private val pool = Executors.newFixedThreadPool(3)
+    private val dir = File(context.filesDir, "logos").apply { mkdirs() }
+    private val mapFile = File(context.filesDir, "epg_icons.json")
+    private val memory = object : LruCache<String, Bitmap>(12 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap) = value.byteCount
+    }
+    @Volatile private var byId: Map<String, String> = emptyMap()
+    @Volatile private var byName: Map<String, String> = emptyMap()
+    private val failed = HashSet<String>()
+
+    /** Loads the EPG icon map (cached; re-downloaded weekly), then calls [done] on the main thread. */
+    fun init(done: () -> Unit) {
+        pool.execute {
+            runCatching { if (mapFile.exists()) parseMap(mapFile.readText()) }
+            ui.post(done)
+            if (!mapFile.exists() || System.currentTimeMillis() - mapFile.lastModified() > 7 * 24 * 3600_000L) {
+                runCatching { downloadMap() }.onSuccess { ui.post(done) }
+            }
+        }
+    }
+
+    private fun parseMap(text: String) {
+        val o = JSONObject(text)
+        byId = o.getJSONObject("id").let { j -> j.keys().asSequence().associateWith { j.getString(it) } }
+        byName = o.getJSONObject("name").let { j -> j.keys().asSequence().associateWith { j.getString(it) } }
+    }
+
+    /** Reads only the <channel> part of the guide: it comes first, the programmes after it are skipped. */
+    private fun downloadMap() {
+        val req = Request.Builder().url(EPG).header("User-Agent", "WLTV ${Http.UA}").build()
+        val ids = HashMap<String, String>()
+        val names = HashMap<String, String>()
+        Http.client.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) return
+            val reader = XZInputStream(r.body!!.byteStream()).bufferedReader()
+            val buf = StringBuilder()
+            val chunk = CharArray(64 * 1024)
+            while (true) {
+                val n = reader.read(chunk)
+                if (n < 0) break
+                buf.append(chunk, 0, n)
+                if (buf.indexOf("<programme") >= 0) break
+            }
+            val channel = Regex("""<channel id="([^"]*)">(.*?)</channel>""")
+            for (m in channel.findAll(buf)) {
+                val icon = Regex("""<icon src="([^"]+)"""").find(m.groupValues[2])?.groupValues?.get(1) ?: continue
+                ids[m.groupValues[1].lowercase()] = icon
+                for (d in Regex("""<display-name[^>]*>([^<]*)</display-name>""").findAll(m.groupValues[2])) {
+                    names.putIfAbsent(Search.norm(d.groupValues[1]), icon)
+                }
+            }
+        }
+        if (ids.isEmpty()) return
+        mapFile.writeText(JSONObject().put("id", JSONObject(ids as Map<*, *>)).put("name", JSONObject(names as Map<*, *>)).toString())
+        byId = ids; byName = names
+    }
+
+    fun urlOf(ch: Channel): String? =
+        ch.logo.takeIf { it.startsWith("http") }
+            ?: byId[ch.tvgId.lowercase()]
+            ?: byName[Search.norm(ch.name)]
+            ?: byName[Search.norm(ch.tvgId)]
+
+    /** Shows the logo of [ch] in [view]: initials at once, the real logo when it is loaded. */
+    fun load(ch: Channel, view: ImageView, heightPx: Int) {
+        val url = urlOf(ch)
+        view.tag = url ?: ch.name
+        val hit = url?.let { memory.get(it) }
+        if (hit != null) {
+            view.setImageBitmap(hit); return
+        }
+        view.setImageBitmap(initials(ch.name, heightPx))
+        if (url == null || synchronized(failed) { url in failed }) return
+        pool.execute {
+            val bmp = runCatching { fetch(url, heightPx) }.getOrNull()
+            if (bmp == null) {
+                synchronized(failed) { failed += url }; return@execute
+            }
+            memory.put(url, bmp)
+            ui.post { if (view.tag == url) view.setImageBitmap(bmp) }
+        }
+    }
+
+    private fun fetch(url: String, heightPx: Int): Bitmap? {
+        val f = File(dir, md5(url))
+        if (!f.exists() || f.length() == 0L) {
+            val req = Request.Builder().url(url).header("User-Agent", Http.UA).build()
+            Http.client.newCall(req).execute().use { r ->
+                if (!r.isSuccessful) return null
+                val tmp = File(dir, f.name + ".tmp")
+                tmp.outputStream().use { out -> r.body!!.byteStream().copyTo(out) }
+                tmp.renameTo(f)
+            }
+        }
+        val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(f.path, o)
+        if (o.outHeight <= 0) {
+            f.delete(); return null
+        }
+        var sample = 1
+        while (o.outHeight / (sample * 2) >= heightPx * 2) sample *= 2
+        return BitmapFactory.decodeFile(f.path, BitmapFactory.Options().apply { inSampleSize = sample })
+    }
+
+    private fun initials(name: String, h: Int): Bitmap {
+        val key = "#" + name
+        memory.get(key)?.let { return it }
+        val w = h * 4 / 3
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        val hue = (name.lowercase().hashCode() and 0x7fffffff) % 360
+        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.HSVToColor(floatArrayOf(hue.toFloat(), 0.45f, 0.55f)) }
+        c.drawRoundRect(RectF(0f, 0f, w.toFloat(), h.toFloat()), h * 0.15f, h * 0.15f, p)
+        val words = name.split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotEmpty() }
+        val text = (if (words.size >= 2) "${words[0][0]}${words[1][0]}" else name.take(2)).uppercase()
+        p.color = Color.WHITE
+        p.typeface = Typeface.DEFAULT_BOLD
+        p.textSize = h * 0.45f
+        p.textAlign = Paint.Align.CENTER
+        c.drawText(text, w / 2f, h / 2f - (p.descent() + p.ascent()) / 2, p)
+        memory.put(key, bmp)
+        return bmp
+    }
+
+    private fun md5(s: String) = MessageDigest.getInstance("MD5").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
+
+    companion object {
+        const val EPG = "http://epg-guide.com/wltv.xz"
+    }
+}

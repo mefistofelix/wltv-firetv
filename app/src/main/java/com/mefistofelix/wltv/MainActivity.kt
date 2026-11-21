@@ -30,6 +30,7 @@ import android.widget.BaseAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.TextView
@@ -61,6 +62,9 @@ class MainActivity : Activity() {
     private val net = Executors.newSingleThreadExecutor()
     private val prefs by lazy { getSharedPreferences("main", Context.MODE_PRIVATE) }
     private lateinit var stats: Stats
+    private lateinit var logos: Logos
+    private lateinit var bannerBox: LinearLayout
+    private lateinit var bannerLogo: ImageView
 
     private lateinit var player: ExoPlayer
     private lateinit var playerView: PlayerView
@@ -85,12 +89,12 @@ class MainActivity : Activity() {
     private var backAt = 0L
     private var groupPos = 0
 
-    private val groupAdapter = RowAdapter { pos -> groups[pos] }
-    private val channelAdapter = RowAdapter { pos ->
+    private val groupAdapter = RowAdapter({ pos -> groups[pos] })
+    private val channelAdapter = RowAdapter({ pos ->
         val ch = shown[pos]
         val sec = if (groups.getOrNull(groupList.selectedItemPosition) == TOP) "   · " + Stats.format(stats.of(ch)) else ""
         "${ch.number}   ${ch.name}$sec"
-    }
+    }, { pos -> shown[pos] })
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -98,7 +102,9 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         stats = Stats(this)
+        logos = Logos(this)
         buildUi()
+        logos.init { channelAdapter.notifyDataSetChanged() }
         player = ExoPlayer.Builder(this).build()
         playerView.player = player
         player.addListener(object : Player.Listener {
@@ -232,7 +238,7 @@ class MainActivity : Activity() {
         if (s.url.isEmpty() && s.external != null) {
             banner("${current?.name}: apro l'app YouTube")
             runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(s.external))) }
-                .onFailure { banner("App YouTube non trovata", keep = true) }
+                .onFailure { banner("App YouTube non trovata", keep = true, ch = null) }
             return
         }
         Log.i(tag, "play ${s.url} drm=${s.licenseUrl != null}")
@@ -337,7 +343,7 @@ class MainActivity : Activity() {
                 KeyEvent.KEYCODE_BACK -> {
                     val now = System.currentTimeMillis()
                     if (now - backAt < 2500) finish() else {
-                        backAt = now; banner("Premi ancora Indietro per uscire")
+                        backAt = now; banner("Premi ancora Indietro per uscire", ch = null)
                     }
                     return true
                 }
@@ -362,12 +368,12 @@ class MainActivity : Activity() {
         val n = digits.toIntOrNull()
         digits = ""
         val ch = channels.firstOrNull { it.number == n }
-        if (ch != null) play(ch) else banner("Canale $n non presente")
+        if (ch != null) play(ch) else banner("Canale $n non presente", ch = null)
     }
 
     private fun digit(d: Int) {
         digits += d
-        banner(digits, keep = true)
+        banner(digits, keep = true, ch = null)
         ui.removeCallbacks(digitTimeout)
         ui.postDelayed(digitTimeout, 1500)
     }
@@ -480,12 +486,17 @@ class MainActivity : Activity() {
         status.text = s
     }
 
-    private val hideBanner = Runnable { banner.visibility = View.GONE }
+    private val hideBanner = Runnable { bannerBox.visibility = View.GONE }
 
-    private fun banner(text: String?, keep: Boolean = false) {
+    /** Top-right box: logo of [ch] (the current channel unless said otherwise) and [text]. */
+    private fun banner(text: String?, keep: Boolean = false, ch: Channel? = current) {
         if (text == null) return
         banner.text = text
-        banner.visibility = View.VISIBLE
+        if (ch != null) {
+            bannerLogo.visibility = View.VISIBLE
+            logos.load(ch, bannerLogo, dp(54))
+        } else bannerLogo.visibility = View.GONE
+        bannerBox.visibility = View.VISIBLE
         ui.removeCallbacks(hideBanner)
         ui.postDelayed(hideBanner, if (keep) 8000 else 3500)
     }
@@ -542,15 +553,22 @@ class MainActivity : Activity() {
         }
         root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
 
+        bannerBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply { setColor(Color.parseColor("#CC101820")); cornerRadius = dp(10).toFloat() }
+            setPadding(dp(14), dp(10), dp(18), dp(10))
+            visibility = View.GONE
+        }
+        bannerLogo = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+        bannerBox.addView(bannerLogo, LinearLayout.LayoutParams(dp(72), dp(54)).apply { rightMargin = dp(14) })
         banner = TextView(this).apply {
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
             typeface = Typeface.DEFAULT_BOLD
-            background = GradientDrawable().apply { setColor(Color.parseColor("#CC101820")); cornerRadius = dp(10).toFloat() }
-            setPadding(dp(18), dp(10), dp(18), dp(10))
-            visibility = View.GONE
         }
-        root.addView(banner, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, dp(28), dp(36), 0) })
+        bannerBox.addView(banner)
+        root.addView(bannerBox, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, dp(28), dp(36), 0) })
 
         panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -627,24 +645,42 @@ class MainActivity : Activity() {
         setContentView(root)
     }
 
-    /** Text rows for both columns; [label] gives the text of a position. */
-    private inner class RowAdapter(private val label: (Int) -> String) : BaseAdapter() {
+    /** Rows for both columns: [label] gives the text of a position, [channel] (channel column) adds its logo. */
+    private inner class RowAdapter(
+        private val label: (Int) -> String,
+        private val channel: ((Int) -> Channel)? = null,
+    ) : BaseAdapter() {
         var size = 0
             set(v) { field = v; notifyDataSetChanged() }
 
         override fun getCount() = size
         override fun getItem(p: Int): Any = p
         override fun getItemId(p: Int) = p.toLong()
+
+        private fun text() = TextView(this@MainActivity).apply {
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+            setSingleLine()
+            ellipsize = TextUtils.TruncateAt.END
+        }
+
         override fun getView(p: Int, convert: View?, parent: ViewGroup?): View {
-            val t = (convert as? TextView) ?: TextView(this@MainActivity).apply {
-                setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-                setPadding(dp(12), dp(9), dp(12), dp(9))
-                setSingleLine()
-                ellipsize = TextUtils.TruncateAt.END
+            val ch = channel ?: run {
+                val t = (convert as? TextView) ?: text().apply { setPadding(dp(12), dp(9), dp(12), dp(9)) }
+                t.text = label(p)
+                return t
             }
-            t.text = label(p)
-            return t
+            val row = (convert as? LinearLayout) ?: LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(5), dp(12), dp(5))
+                addView(ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER },
+                    LinearLayout.LayoutParams(dp(48), dp(36)).apply { rightMargin = dp(12) })
+                addView(text(), LinearLayout.LayoutParams(0, -2, 1f))
+            }
+            logos.load(ch(p), row.getChildAt(0) as ImageView, dp(36))
+            (row.getChildAt(1) as TextView).text = label(p)
+            return row
         }
     }
 
