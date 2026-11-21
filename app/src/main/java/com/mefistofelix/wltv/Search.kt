@@ -25,8 +25,11 @@ object Search {
 
     fun norm(s: String) = words(s).joinToString("")
 
-    /** Channels matching [query], best first. A bare number also matches the channel number. */
-    fun find(all: List<Channel>, query: String): List<Channel> {
+    /**
+     * Channels matching [query], best first. A bare number also matches the channel number; [onAir] gives the title of
+     * the programme on air, so "un posto al sole" finds the channel showing it (a name match ranks a bit higher).
+     */
+    fun find(all: List<Channel>, query: String, onAir: (Channel) -> String? = { null }): List<Channel> {
         val qw = words(query)
         if (qw.isEmpty()) return emptyList()
         val q = qw.joinToString("")
@@ -39,6 +42,7 @@ object Search {
                 if (num != null && ch.number == num) 100 else 0,
                 score(n, q),
                 if (qCore != q) score(n, qCore) - 5 else 0,
+                onAir(ch)?.let { t -> if (q.length >= 3) score(norm(t), q) - 8 else 0 } ?: 0,
             )
             if (s > 0) scored += ch to s
         }

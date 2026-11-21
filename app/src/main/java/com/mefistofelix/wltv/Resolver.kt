@@ -42,6 +42,9 @@ object Resolver {
                 val id = Http.dec(rest.substringAfter('/', "").replace("+", "%2B"))
                 plugin(b, id)
             }
+            // plugin://plugin.video.wltvhelper/webcam/skylinewebcams/<country>/<region>/<city>/<cam> (default.py playWebcam)
+            l.startsWith("plugin://plugin.video.wltvhelper/webcam/") ->
+                skyline(l.removePrefix("plugin://plugin.video.wltvhelper/webcam/").substringAfter('/'))
             l.startsWith("plugin://plugin.video.twitch/") -> twitch(Http.match(l, "channel_name=([^&]+)"))
             l.startsWith("plugin://plugin.video.youtube/") -> ytVideo(Http.match(l, "video_id=([^&]+)"))
             l.startsWith("http", true) -> direct(l)
@@ -348,6 +351,23 @@ object Resolver {
         }.getOrDefault("")
         return if (hls.isNotEmpty()) Stream(hls, mapOf("User-Agent" to Http.UA))
         else Stream("", external = "https://www.youtube.com/watch?v=$videoId")
+    }
+
+    // ---------------------------------------------------------------- SkylineWebcams (broadcaster/skylinewebcams.py)
+
+    private fun skyline(path: String): Stream {
+        val host = "www.skylinewebcams.com"
+        val h = Http.browser(host).apply { put("Accept", "text/html,application/xhtml+xml,application/xml") }
+        val data = Http.get("https://$host/it/webcam/$path.html", h)
+        // the addon reads source:'…'; the page now has source: "livee.m3u8?a=…"
+        val src = Http.match(data, """source:\s*['"]([^'"]*m3u8[^'"]*)['"]""")
+        if (src.isNotEmpty()) {
+            val url = if (src.startsWith("http")) src else "https://hd-auth.skylinewebcams.com/" + src.replace("livee.", "live.")
+            return Stream(url, Http.browser("https://$host"))
+        }
+        val yt = Http.match(data, """videoId:\s*['"](.*?)['"]""")
+        if (yt.isNotEmpty()) return ytVideo(yt)
+        return Stream("")
     }
 
     // ---------------------------------------------------------------- Twitch

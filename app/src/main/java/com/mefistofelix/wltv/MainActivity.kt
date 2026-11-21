@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -33,6 +34,7 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
+import android.widget.ProgressBar
 import android.widget.TextView
 import androidx.annotation.OptIn
 import androidx.media3.common.C
@@ -50,9 +52,11 @@ import androidx.media3.ui.PlayerView
 import java.util.concurrent.Executors
 
 /**
- * Single activity: fullscreen player plus the channel panel (groups | channels, search field, list buttons).
- * Remote: ▲▼ / CH± zap, OK opens the panel, Menu opens it and re-downloads the list (in the panel: re-download),
- * long Menu = search with the keyboard (voice: mic button of the Fire TV keyboard), digits = channel number.
+ * Single activity: fullscreen player, info banner, and the panel (groups | rows, search field, buttons).
+ * The panel has two modes: channels (rows = channels with the programme on air under the name) and the TV guide
+ * (rows = programmes on air or coming next, whatever the channel; OK plays the channel showing it).
+ * Remote, video in front: ▲▼ / CH± zap, OK or ◀ = channels, ▶ or ⏩ = guide, Menu = channels + re-download,
+ * long Menu = search (voice: mic of the Fire TV keyboard), digits = channel number, ⏯ = reload.
  */
 @OptIn(UnstableApi::class)
 class MainActivity : Activity() {
@@ -60,15 +64,21 @@ class MainActivity : Activity() {
     private val ui = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
     private val net = Executors.newSingleThreadExecutor()
+    private val epgExec = Executors.newSingleThreadExecutor()
     private val prefs by lazy { getSharedPreferences("main", Context.MODE_PRIVATE) }
     private lateinit var stats: Stats
     private lateinit var logos: Logos
-    private lateinit var bannerBox: LinearLayout
-    private lateinit var bannerLogo: ImageView
+    private lateinit var epg: Epg
 
     private lateinit var player: ExoPlayer
     private lateinit var playerView: PlayerView
-    private lateinit var banner: TextView
+    private lateinit var bannerBox: LinearLayout
+    private lateinit var bannerLogo: ImageView
+    private lateinit var bannerTitle: TextView
+    private lateinit var bannerProg: TextView
+    private lateinit var bannerTime: TextView
+    private lateinit var bannerBar: ProgressBar
+    private lateinit var bannerNext: TextView
     private lateinit var panel: LinearLayout
     private lateinit var header: TextView
     private lateinit var status: TextView
@@ -76,10 +86,17 @@ class MainActivity : Activity() {
     private lateinit var groupList: ListView
     private lateinit var channelList: ListView
     private lateinit var listButton: Button
+    private lateinit var modeButton: Button
+
+    /** A row of the right column: a channel, or (guide mode) a programme of that channel. */
+    private class Row(val ch: Channel, val prog: Prog?, val guide: Boolean = false)
+    private class Group(val label: String, val rows: List<Row>, val indent: Boolean = false)
 
     private var channels: List<Channel> = emptyList()
-    private var groups: List<String> = emptyList()
-    private var shown: List<Channel> = emptyList()
+    private var sourceTitles: List<String> = emptyList()
+    private var guideMode = false
+    private var groups: List<Group> = emptyList()
+    private var shown: List<Row> = emptyList()
     private var current: Channel? = null
     private var playGen = 0
     private var retriedWithoutMime = false
@@ -89,12 +106,8 @@ class MainActivity : Activity() {
     private var backAt = 0L
     private var groupPos = 0
 
-    private val groupAdapter = RowAdapter({ pos -> groups[pos] })
-    private val channelAdapter = RowAdapter({ pos ->
-        val ch = shown[pos]
-        val sec = if (groups.getOrNull(groupList.selectedItemPosition) == TOP) "   · " + Stats.format(stats.of(ch)) else ""
-        "${ch.number}   ${ch.name}$sec"
-    }, { pos -> shown[pos] })
+    private val groupAdapter = GroupAdapter()
+    private val rowAdapter = RowAdapter()
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -103,18 +116,21 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         stats = Stats(this)
         logos = Logos(this)
+        epg = Epg(this)
         buildUi()
-        logos.init { channelAdapter.notifyDataSetChanged() }
+        logos.init { rowAdapter.notifyDataSetChanged() }
         player = ExoPlayer.Builder(this).build()
         playerView.player = player
         player.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) = onError(error)
             override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_READY) banner(current?.let { "${it.number}  ${it.name}" })
+                if (state == Player.STATE_READY) info(current)
             }
         })
         ui.postDelayed(tick, 1000)
+        ui.postDelayed(minute, 60_000)
         loadList(refresh = false)
+        updateEpg()
     }
 
     override fun onStop() {
@@ -133,7 +149,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
         player.release()
-        io.shutdownNow(); net.shutdownNow()
+        io.shutdownNow(); net.shutdownNow(); epgExec.shutdownNow()
         super.onDestroy()
     }
 
@@ -145,26 +161,60 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Every minute: programmes move on (rows, progress bars), and the guide is refreshed when it gets old. */
+    private val minute = object : Runnable {
+        override fun run() {
+            if (panel.visibility == View.VISIBLE) rowAdapter.notifyDataSetChanged()
+            if (bannerBox.visibility == View.VISIBLE) info(current, keepOpen = false, restart = false)
+            updateEpg()
+            ui.postDelayed(this, 60_000)
+        }
+    }
+
+    private fun updateEpg(force: Boolean = false) {
+        epgExec.execute {
+            if (!epg.update(force)) return@execute
+            ui.post {
+                logos.setMaps(epg.iconById, epg.iconByName)
+                if (panel.visibility == View.VISIBLE) refreshGroups()
+                if (bannerBox.visibility == View.VISIBLE) info(current, restart = false)
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ list loading
 
+    /** Loads every selected source (cache first; a source older than a day, or [refresh], is downloaded again). */
     private fun loadList(refresh: Boolean, then: (() -> Unit)? = null) {
-        val id = Lists.selected(this)
-        status("Caricamento elenco…")
+        val ids = Lists.selected(this)
+        status(if (refresh) "Aggiorno ${ids.size} elenchi…" else "Caricamento elenchi…")
         net.execute {
-            var list = Lists.load(this, id, refresh)
-            // first start offline-cache miss, or a cache older than a day: try the server once
-            val stale = !refresh && System.currentTimeMillis() - prefs.getLong("loaded_$id", 0) > 24 * 3600_000L
-            if (list == null || stale) Lists.load(this, id, true)?.let { list = it }
-            val title = Lists.title(this, id)
-            ui.post {
+            val order = Lists.catalog(this, false).values.flatten().map { it.id }
+            val sorted = ids.sortedBy { order.indexOf(it).let { i -> if (i < 0) Int.MAX_VALUE else i } }
+            val all = ArrayList<Channel>()
+            val titles = ArrayList<String>()
+            var failed = 0
+            for (id in sorted) {
+                val stale = !refresh && System.currentTimeMillis() - prefs.getLong("loaded_$id", 0) > 24 * 3600_000L
+                var list = Lists.load(this, id, refresh || stale)
+                if (list == null && !(refresh || stale)) list = Lists.load(this, id, true)
                 if (list == null) {
-                    status("Elenco non disponibile: controlla la connessione e premi ≡ per riprovare")
+                    failed++; continue
+                }
+                if (refresh || stale) prefs.edit().putLong("loaded_$id", System.currentTimeMillis()).apply()
+                titles += list.first().source
+                all += list
+            }
+            val unique = all.distinctBy { it.key }
+            ui.post {
+                if (unique.isEmpty()) {
+                    status("Elenchi non disponibili: controlla la connessione e premi ≡ per riprovare")
                     showPanel()
                     return@post
                 }
-                if (refresh || stale) prefs.edit().putLong("loaded_$id", System.currentTimeMillis()).apply()
-                setChannels(list!!, title)
-                status(if (refresh) "Elenco aggiornato: ${list!!.size} canali" else "${list!!.size} canali")
+                setChannels(unique, titles)
+                val note = if (failed > 0) " ($failed elenchi non raggiungibili)" else ""
+                status((if (refresh) "Elenchi aggiornati: " else "") + "${unique.size} canali$note")
                 if (current == null) {
                     val last = prefs.getString("last", null)
                     val ch = channels.firstOrNull { it.key == last }
@@ -175,23 +225,56 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun setChannels(list: List<Channel>, title: String) {
+    private fun setChannels(list: List<Channel>, titles: List<String>) {
         channels = list
-        header.text = "WLTV  ·  $title"
-        listButton.text = "Elenco: $title"
+        sourceTitles = titles
+        val name = when (titles.size) {
+            0 -> ""
+            1 -> titles[0]
+            else -> "${titles[0]} + ${titles.size - 1}"
+        }
+        header.text = "WLTV  ·  $name"
+        listButton.text = "Elenchi (${titles.size})"
         current = current?.let { c -> channels.firstOrNull { it.key == c.key } ?: c }
         refreshGroups()
     }
 
+    private fun channelRows(list: List<Channel>) = list.map { Row(it, null) }
+
+    /** Left column. Channels: most watched, all, then per source and category. Guide: on air, next, categories. */
     private fun refreshGroups() {
-        val keep = groups.getOrNull(groupList.selectedItemPosition)
-        val g = ArrayList<String>()
-        if (stats.top(channels).isNotEmpty()) g += TOP
-        g += ALL
-        channels.map { it.group }.distinct().forEach { g += it }
+        val keep = groups.getOrNull(groupPos)?.label?.substringBefore("  ")
+        val g = ArrayList<Group>()
+        if (!guideMode) {
+            val top = stats.top(channels)
+            if (top.isNotEmpty()) g += Group(TOP, channelRows(top))
+            g += Group(ALL, channelRows(channels))
+            val multi = sourceTitles.size > 1
+            for (src in sourceTitles) {
+                val mine = if (multi) channels.filter { it.source == src } else channels
+                val cats = mine.groupBy { it.group }
+                if (multi) g += Group("▸ $src", channelRows(mine))
+                if (!multi || cats.size > 1) for ((cat, list) in cats) g += Group(cat, channelRows(list), indent = multi)
+            }
+        } else {
+            val now = System.currentTimeMillis()
+            val onAir = ArrayList<Row>()
+            val next = ArrayList<Row>()
+            for (ch in channels.distinctBy { epg.idOf(it) ?: it.key }) {
+                epg.now(ch, now)?.let { onAir += Row(ch, it, guide = true) }
+                epg.next(ch, now)?.let { if (it.start - now < 4 * 3600_000L) next += Row(ch, it, guide = true) }
+            }
+            onAir.sortBy { it.prog!!.title.lowercase() }
+            next.sortBy { it.prog!!.start }
+            g += Group(ON_AIR, onAir)
+            g += Group(NEXT, next)
+            onAir.filter { it.prog!!.category.isNotEmpty() }.groupBy { it.prog!!.category.replaceFirstChar { c -> c.uppercase() } }
+                .toSortedMap().forEach { (cat, rows) -> g += Group(cat, rows) }
+            if (onAir.isEmpty()) status(if (epg.parsedAt == 0L) "Guida TV in caricamento…" else "Nessun programma in guida per questi canali")
+        }
         groups = g
-        groupAdapter.size = g.size
-        val pos = g.indexOf(keep).takeIf { it >= 0 } ?: 0
+        groupAdapter.notifyDataSetChanged()
+        val pos = g.indexOfFirst { it.label == keep }.takeIf { it >= 0 } ?: 0
         // setSelection would scroll the row to the top and hide the groups above it (★ Più guardati)
         val row = groupList.getChildAt(0)?.height?.takeIf { it > 0 } ?: dp(44)
         groupList.setSelectionFromTop(pos, if (pos < 6) pos * row else 0)
@@ -201,14 +284,22 @@ class MainActivity : Activity() {
     private fun showGroup(pos: Int) {
         groupPos = pos
         if (search.text.isNotEmpty()) return
-        shown = when (groups.getOrNull(pos)) {
-            TOP -> stats.top(channels)
-            ALL, null -> channels
-            else -> channels.filter { it.group == groups[pos] }
-        }
-        channelAdapter.size = shown.size
-        val cur = shown.indexOfFirst { it.key == current?.key }
+        shown = groups.getOrNull(pos)?.rows ?: emptyList()
+        rowAdapter.notifyDataSetChanged()
+        val cur = shown.indexOfFirst { it.ch.key == current?.key }
         channelList.setSelection(if (cur >= 0) cur else 0)
+    }
+
+    private fun setMode(guide: Boolean) {
+        if (guideMode == guide) return
+        guideMode = guide
+        modeButton.text = if (guide) "Canali" else "Guida TV"
+        search.setText("")
+        groupPos = 0
+        groups = emptyList()
+        refreshGroups()
+        if (guide) status(if (epg.parsedAt == 0L) "Guida TV in caricamento…" else "Programmi in onda e prossimi")
+        else status("${channels.size} canali")
     }
 
     // ------------------------------------------------------------------ playback
@@ -218,7 +309,7 @@ class MainActivity : Activity() {
         current = ch
         prefs.edit().putString("last", ch.key).apply()
         val gen = ++playGen
-        banner("${ch.number}  ${ch.name}\nCaricamento…", keep = true)
+        info(ch, "Caricamento…", keepOpen = true)
         player.stop()
         io.execute {
             val r = runCatching { Resolver.resolve(ch.url) }
@@ -226,7 +317,7 @@ class MainActivity : Activity() {
                 if (gen != playGen) return@post
                 r.onSuccess { start(it) }.onFailure {
                     Log.w(tag, "resolve ${ch.url}", it)
-                    banner("${ch.number}  ${ch.name}\nNon disponibile: ${it.message ?: it.javaClass.simpleName}", keep = true)
+                    info(ch, "Non disponibile: ${it.message ?: it.javaClass.simpleName}", keepOpen = true)
                 }
             }
         }
@@ -236,9 +327,9 @@ class MainActivity : Activity() {
         lastStream = s
         retriedWithoutMime = !forceMime
         if (s.url.isEmpty() && s.external != null) {
-            banner("${current?.name}: apro l'app YouTube")
+            info(current, "Apro l'app YouTube")
             runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(s.external))) }
-                .onFailure { banner("App YouTube non trovata", keep = true, ch = null) }
+                .onFailure { message("App YouTube non trovata") }
             return
         }
         Log.i(tag, "play ${s.url} drm=${s.licenseUrl != null}")
@@ -295,11 +386,12 @@ class MainActivity : Activity() {
             in 6000..6999 -> "DRM non accettato"
             else -> e.errorCodeName
         }
-        banner("${current?.number}  ${current?.name}\nErrore: $why", keep = true)
+        info(current, "Errore: $why", keepOpen = true)
     }
 
     private fun zap(step: Int) {
-        val list = if (shown.any { it.key == current?.key }) shown else channels
+        val visible = shown.map { it.ch }.distinctBy { it.key }
+        val list = if (visible.any { it.key == current?.key }) visible else channels
         if (list.isEmpty()) return
         val i = list.indexOfFirst { it.key == current?.key }
         play(list[((if (i < 0) 0 else i + step) % list.size + list.size) % list.size])
@@ -332,18 +424,27 @@ class MainActivity : Activity() {
         when (code) {
             KeyEvent.KEYCODE_CHANNEL_UP -> { zap(-1); return true }
             KeyEvent.KEYCODE_CHANNEL_DOWN -> { zap(1); return true }
+            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, KeyEvent.KEYCODE_GUIDE -> {
+                setMode(!(panelOpen && guideMode)); showPanel(); return true
+            }
         }
         if (!panelOpen) {
             when (code) {
                 KeyEvent.KEYCODE_DPAD_UP -> { zap(-1); return true }
                 KeyEvent.KEYCODE_DPAD_DOWN -> { zap(1); return true }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_LEFT,
-                KeyEvent.KEYCODE_DPAD_RIGHT -> { showPanel(); return true }
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_LEFT -> {
+                    setMode(false); showPanel(); return true
+                }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> { setMode(true); showPanel(); return true }
+                KeyEvent.KEYCODE_INFO -> { info(current); return true }
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { current?.let { play(it) }; return true }
                 KeyEvent.KEYCODE_BACK -> {
+                    if (bannerBox.visibility == View.VISIBLE) {
+                        bannerBox.visibility = View.GONE; return true
+                    }
                     val now = System.currentTimeMillis()
                     if (now - backAt < 2500) finish() else {
-                        backAt = now; banner("Premi ancora Indietro per uscire", ch = null)
+                        backAt = now; message("Premi ancora Indietro per uscire")
                     }
                     return true
                 }
@@ -352,7 +453,7 @@ class MainActivity : Activity() {
             if (current != null) hidePanel() else finish()
             return true
         } else if (code == KeyEvent.KEYCODE_DPAD_LEFT && channelList.hasFocus()) {
-            // ListView would pick the group row next to the focused channel: keep the group being shown
+            // ListView would pick the group row next to the focused row: keep the group being shown
             val keep = groupPos
             groupList.requestFocus()
             ui.post {
@@ -368,12 +469,12 @@ class MainActivity : Activity() {
         val n = digits.toIntOrNull()
         digits = ""
         val ch = channels.firstOrNull { it.number == n }
-        if (ch != null) play(ch) else banner("Canale $n non presente", ch = null)
+        if (ch != null) play(ch) else message("Canale $n non presente")
     }
 
     private fun digit(d: Int) {
         digits += d
-        banner(digits, keep = true, ch = null)
+        message(digits, keepOpen = true)
         ui.removeCallbacks(digitTimeout)
         ui.postDelayed(digitTimeout, 1500)
     }
@@ -383,6 +484,7 @@ class MainActivity : Activity() {
     private fun showPanel() {
         if (panel.visibility != View.VISIBLE) {
             panel.visibility = View.VISIBLE
+            bannerBox.visibility = View.GONE
             refreshGroups()
         }
         // after the layout pass: a list that has just been filled does not keep a focus requested now
@@ -408,15 +510,17 @@ class MainActivity : Activity() {
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(search.windowToken, 0)
     }
 
+    /** Channels by name, number or title of the programme on air. */
     private fun onSearchText(q: String) {
         if (q.isBlank()) {
             status("${channels.size} canali")
-            showGroup(groupList.selectedItemPosition.coerceAtLeast(0)); return
+            showGroup(groupPos); return
         }
-        shown = Search.find(channels, q)
-        channelAdapter.size = shown.size
+        val now = System.currentTimeMillis()
+        shown = Search.find(channels, q) { epg.now(it, now)?.title }.map { Row(it, null) }
+        rowAdapter.notifyDataSetChanged()
         channelList.setSelection(0)
-        status(if (shown.isEmpty()) "Nessun canale per “$q”" else "${shown.size} risultati per “$q”")
+        status(if (shown.isEmpty()) "Nessun canale o programma per “$q”" else "${shown.size} risultati per “$q”")
     }
 
     /** IME "Go" (also sent after dictation): play the best match straight away. */
@@ -424,52 +528,78 @@ class MainActivity : Activity() {
         val best = shown.firstOrNull() ?: return
         hideKeyboard()
         search.setText("")
-        play(best)
+        play(best.ch)
         hidePanel()
     }
 
-    private fun chooseList() {
+    // ------------------------------------------------------------------ list chooser
+
+    /** Sections → multi-choice lists of sources; nothing changes until "Applica". */
+    private fun chooseLists() {
         status("Scarico gli elenchi disponibili…")
         net.execute {
-            val lists = Lists.index(this, true)
+            val cat = Lists.catalog(this, true)
             ui.post {
                 status("")
-                val names = lists.map { it.title } + "URL personalizzato…"
-                val sel = Lists.selected(this)
-                AlertDialog.Builder(this)
-                    .setTitle("Elenco canali")
-                    .setSingleChoiceItems(names.map { it as CharSequence }.toTypedArray(), lists.indexOfFirst { it.id == sel }.let { if (it < 0 && sel == Lists.CUSTOM) names.size - 1 else it }) { d, which ->
-                        d.dismiss()
-                        if (which == lists.size) askCustomUrl() else switchList(lists[which].id)
-                    }
-                    .setNegativeButton("Annulla", null)
-                    .show()
+                sectionsDialog(cat, Lists.selected(this).toMutableSet())
             }
         }
     }
 
-    private fun askCustomUrl() {
+    private fun sectionsDialog(cat: Map<String, List<Lists.Source>>, chosen: MutableSet<String>) {
+        val sections = Lists.SECTIONS.filter { cat[it]?.isNotEmpty() == true }
+        val labels = sections.map { s ->
+            val n = cat[s]!!.count { it.id in chosen }
+            "$s  ·  ${cat[s]!!.size} elenchi" + if (n > 0) "  ·  $n attivi" else ""
+        } + ("URL personalizzato…" + if (Lists.CUSTOM in chosen) "  ·  attivo" else "")
+        AlertDialog.Builder(this)
+            .setTitle("Elenchi canali (${chosen.size} attivi)")
+            .setItems(labels.map { it as CharSequence }.toTypedArray()) { _, which ->
+                if (which < sections.size) sourcesDialog(cat, sections[which], chosen) else askCustomUrl(cat, chosen)
+            }
+            .setPositiveButton("Applica") { _, _ -> applyLists(chosen) }
+            .setNegativeButton("Annulla", null)
+            .show()
+    }
+
+    private fun sourcesDialog(cat: Map<String, List<Lists.Source>>, section: String, chosen: MutableSet<String>) {
+        val items = cat[section]!!
+        val checked = BooleanArray(items.size) { items[it].id in chosen }
+        AlertDialog.Builder(this)
+            .setTitle(section)
+            .setMultiChoiceItems(items.map { it.title as CharSequence }.toTypedArray(), checked) { _, which, on ->
+                if (on) chosen += items[which].id else chosen -= items[which].id
+            }
+            .setPositiveButton("OK") { _, _ -> sectionsDialog(cat, chosen) }
+            .setOnCancelListener { sectionsDialog(cat, chosen) }
+            .show()
+    }
+
+    private fun askCustomUrl(cat: Map<String, List<Lists.Source>>, chosen: MutableSet<String>) {
         val field = EditText(this).apply {
             setText(Lists.customUrl(this@MainActivity))
-            hint = "https://…/lista.m3u"
+            hint = "https://…/lista.m3u (vuoto = nessuna)"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             setSingleLine()
         }
-        AlertDialog.Builder(this).setTitle("Indirizzo della lista M3U").setView(field)
-            .setPositiveButton("Usa") { _, _ ->
+        AlertDialog.Builder(this).setTitle("Indirizzo di una lista M3U").setView(field)
+            .setPositiveButton("OK") { _, _ ->
                 val u = field.text.toString().trim()
                 if (u.startsWith("http")) {
-                    Lists.setCustomUrl(this, u); switchList(Lists.CUSTOM)
-                }
+                    Lists.setCustomUrl(this, u); chosen += Lists.CUSTOM
+                } else chosen -= Lists.CUSTOM
+                sectionsDialog(cat, chosen)
             }
-            .setNegativeButton("Annulla", null).show()
+            .setOnCancelListener { sectionsDialog(cat, chosen) }
+            .show()
     }
 
-    private fun switchList(id: String) {
-        Lists.select(this, id)
+    private fun applyLists(chosen: Set<String>) {
+        Lists.setSelected(this, chosen)
         search.setText("")
-        groupList.setSelection(0)
-        loadList(refresh = true) { channelList.requestFocus() }
+        groupPos = 0
+        groups = emptyList()
+        loadList(refresh = false) { channelList.requestFocus() }
     }
 
     private fun resetStats() {
@@ -478,7 +608,7 @@ class MainActivity : Activity() {
             .setNegativeButton("Annulla", null).show()
     }
 
-    // ------------------------------------------------------------------ views
+    // ------------------------------------------------------------------ banner
 
     private fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
@@ -488,18 +618,58 @@ class MainActivity : Activity() {
 
     private val hideBanner = Runnable { bannerBox.visibility = View.GONE }
 
-    /** Top-right box: logo of [ch] (the current channel unless said otherwise) and [text]. */
-    private fun banner(text: String?, keep: Boolean = false, ch: Channel? = current) {
-        if (text == null) return
-        banner.text = text
-        if (ch != null) {
-            bannerLogo.visibility = View.VISIBLE
-            logos.load(ch, bannerLogo, dp(54))
-        } else bannerLogo.visibility = View.GONE
-        bannerBox.visibility = View.VISIBLE
-        ui.removeCallbacks(hideBanner)
-        ui.postDelayed(hideBanner, if (keep) 8000 else 3500)
+    /**
+     * Top-right box for [ch]: logo, number and name, the programme on air with its start and end time and a progress
+     * bar, and the next one. [note] adds a line (loading, errors). [restart] re-arms the auto-hide timer.
+     */
+    private fun info(ch: Channel?, note: String? = null, keepOpen: Boolean = false, restart: Boolean = true) {
+        if (ch == null) {
+            note?.let { message(it, keepOpen) }; return
+        }
+        bannerLogo.visibility = View.VISIBLE
+        logos.load(ch, bannerLogo, dp(60))
+        bannerTitle.text = "${ch.number}  ${ch.name}"
+        val now = System.currentTimeMillis()
+        val p = epg.now(ch, now)
+        val n = epg.next(ch, now)
+        val lines = ArrayList<String>()
+        if (p != null) {
+            bannerProg.text = p.title
+            bannerProg.visibility = View.VISIBLE
+            val left = (p.stop - now) / 60_000
+            bannerTime.text = "${Epg.hhmm(p.start)} – ${Epg.hhmm(p.stop)}   ·   " + if (left > 0) "mancano $left min" else "sta finendo"
+            bannerTime.visibility = View.VISIBLE
+            bannerBar.progress = p.progress(now)
+            bannerBar.visibility = View.VISIBLE
+        } else {
+            bannerProg.visibility = View.GONE; bannerTime.visibility = View.GONE; bannerBar.visibility = View.GONE
+        }
+        if (n != null) lines += "Dopo, alle ${Epg.hhmm(n.start)}: ${n.title}"
+        note?.let { lines += it }
+        bannerNext.text = lines.joinToString("\n")
+        bannerNext.visibility = if (lines.isEmpty()) View.GONE else View.VISIBLE
+        showBanner(keepOpen, restart)
     }
+
+    /** The box with a plain message and no channel. */
+    private fun message(text: String, keepOpen: Boolean = false) {
+        bannerLogo.visibility = View.GONE
+        bannerTitle.text = text
+        bannerProg.visibility = View.GONE; bannerTime.visibility = View.GONE; bannerBar.visibility = View.GONE
+        bannerNext.visibility = View.GONE
+        showBanner(keepOpen, true)
+    }
+
+    private fun showBanner(keepOpen: Boolean, restart: Boolean) {
+        if (panel.visibility == View.VISIBLE) return
+        bannerBox.visibility = View.VISIBLE
+        if (restart) {
+            ui.removeCallbacks(hideBanner)
+            ui.postDelayed(hideBanner, if (keepOpen) 10_000 else 6_000)
+        }
+    }
+
+    // ------------------------------------------------------------------ views
 
     private fun focusBg(): StateListDrawable {
         fun shape(fill: Int, stroke: Int) = GradientDrawable().apply {
@@ -515,9 +685,10 @@ class MainActivity : Activity() {
         this.text = text
         isAllCaps = false
         setSingleLine()
-        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
         background = focusBg()
-        setPadding(dp(14), dp(6), dp(14), dp(6))
+        setPadding(dp(12), dp(6), dp(12), dp(6))
+        minWidth = 0; minimumWidth = 0
         setOnFocusChangeListener { v, f -> (v as Button).setTextColor(if (f) Color.BLACK else Color.WHITE) }
         setTextColor(Color.WHITE)
         setOnClickListener { onClick() }
@@ -540,6 +711,21 @@ class MainActivity : Activity() {
         isFocusable = true
     }
 
+    private fun bar(heightDp: Int) = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+        max = 1000
+        progressTintList = ColorStateList.valueOf(Color.parseColor("#2FA8FF"))
+        progressBackgroundTintList = ColorStateList.valueOf(Color.parseColor("#55FFFFFF"))
+        minimumHeight = dp(heightDp)
+    }
+
+    private fun text(sp: Float, color: Int = Color.WHITE, bold: Boolean = false) = TextView(this).apply {
+        setTextColor(color)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
+        if (bold) typeface = Typeface.DEFAULT_BOLD
+        setSingleLine()
+        ellipsize = TextUtils.TruncateAt.END
+    }
+
     private fun buildUi() {
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         playerView = PlayerView(this).apply {
@@ -553,34 +739,40 @@ class MainActivity : Activity() {
         }
         root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
 
+        // info banner, bottom: logo | channel, programme, times + progress, next
         bannerBox = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = GradientDrawable().apply { setColor(Color.parseColor("#CC101820")); cornerRadius = dp(10).toFloat() }
-            setPadding(dp(14), dp(10), dp(18), dp(10))
+            background = GradientDrawable().apply { setColor(Color.parseColor("#DD0B0F14")); cornerRadius = dp(12).toFloat() }
+            setPadding(dp(18), dp(14), dp(22), dp(14))
             visibility = View.GONE
         }
         bannerLogo = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
-        bannerBox.addView(bannerLogo, LinearLayout.LayoutParams(dp(72), dp(54)).apply { rightMargin = dp(14) })
-        banner = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
-            typeface = Typeface.DEFAULT_BOLD
-        }
-        bannerBox.addView(banner)
-        root.addView(bannerBox, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, dp(28), dp(36), 0) })
+        bannerBox.addView(bannerLogo, LinearLayout.LayoutParams(dp(80), dp(60)).apply { rightMargin = dp(18) })
+        val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        bannerTitle = text(22f, bold = true)
+        bannerProg = text(19f)
+        bannerTime = text(14f, Color.parseColor("#9AD4FF"))
+        bannerBar = bar(5)
+        bannerNext = text(14f, Color.parseColor("#BBBBBB")).apply { isSingleLine = false; maxLines = 3 }
+        col.addView(bannerTitle)
+        col.addView(bannerProg, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(2) })
+        col.addView(bannerTime, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+        col.addView(bannerBar, LinearLayout.LayoutParams(-1, dp(5)).apply { topMargin = dp(4) })
+        col.addView(bannerNext, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        bannerBox.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
+        val bw = (resources.displayMetrics.widthPixels * 0.62).toInt()
+        root.addView(bannerBox, FrameLayout.LayoutParams(bw, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(32) })
 
         panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#E60B0F14"))
             setPadding(dp(24), dp(20), dp(24), dp(16))
         }
-        header = TextView(this).apply {
-            setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f); typeface = Typeface.DEFAULT_BOLD
-        }
+        header = text(22f, bold = true)
         panel.addView(header)
         search = SearchField(this).apply {
-            hint = "Cerca canale: OK e poi il microfono della tastiera"
+            hint = "Cerca canale o programma: OK e poi il microfono"
             setHintTextColor(Color.parseColor("#88FFFFFF"))
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
@@ -603,14 +795,17 @@ class MainActivity : Activity() {
         panel.addView(search, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
 
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        listButton = button("Elenco") { chooseList() }
-        buttons.addView(listButton)
-        buttons.addView(button("Cerca") { openSearch() }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10) })
-        buttons.addView(button("Aggiorna") { loadList(refresh = true) }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10) })
-        buttons.addView(button("Azzera più visti") { resetStats() }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10) })
+        modeButton = button("Guida TV") { setMode(!guideMode); channelList.requestFocus() }
+        listButton = button("Elenchi") { chooseLists() }
+        val gap = { LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) } }
+        buttons.addView(modeButton)
+        buttons.addView(listButton, gap())
+        buttons.addView(button("Cerca") { openSearch() }, gap())
+        buttons.addView(button("Aggiorna") { loadList(refresh = true); updateEpg(force = true) }, gap())
+        buttons.addView(button("Azzera visti") { resetStats() }, gap())
         panel.addView(buttons, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
 
-        status = TextView(this).apply { setTextColor(Color.parseColor("#9AD4FF")); setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f) }
+        status = text(14f, Color.parseColor("#9AD4FF"))
         panel.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
 
         val cols = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -627,59 +822,94 @@ class MainActivity : Activity() {
             setOnItemClickListener { _, _, _, _ -> channelList.requestFocus() }
         }
         channelList = listView().apply {
-            adapter = channelAdapter
+            adapter = rowAdapter
             // API 28: a focus requested before the panel's first layout is handed to the default view on layout;
             // without this it is the search field, and focusing it pops up the Fire TV keyboard
             if (android.os.Build.VERSION.SDK_INT >= 26) isFocusedByDefault = true
             setOnItemClickListener { _, _, pos, _ ->
-                shown.getOrNull(pos)?.let { play(it); hidePanel() }
+                shown.getOrNull(pos)?.let { play(it.ch); hidePanel() }
             }
         }
         cols.addView(groupList, LinearLayout.LayoutParams(0, -1, 0.36f))
-        cols.addView(channelList, LinearLayout.LayoutParams(0, -1, 0.64f).apply { leftMargin = dp(16) })
+        cols.addView(channelList, LinearLayout.LayoutParams(0, -1, 0.64f).apply { leftMargin = dp(14) })
         panel.addView(cols, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(10) })
 
-        root.addView(panel, FrameLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.52).toInt(), -1, Gravity.START))
+        root.addView(panel, FrameLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.56).toInt(), -1, Gravity.START))
         // hidden until needed: a visible panel at start would give the search field the initial focus (and the keyboard)
         panel.visibility = View.GONE
         setContentView(root)
     }
 
-    /** Rows for both columns: [label] gives the text of a position, [channel] (channel column) adds its logo. */
-    private inner class RowAdapter(
-        private val label: (Int) -> String,
-        private val channel: ((Int) -> Channel)? = null,
-    ) : BaseAdapter() {
-        var size = 0
-            set(v) { field = v; notifyDataSetChanged() }
-
-        override fun getCount() = size
+    /** Left column rows: label and, right-aligned, how many channels or programmes it holds. */
+    private inner class GroupAdapter : BaseAdapter() {
+        override fun getCount() = groups.size
         override fun getItem(p: Int): Any = p
         override fun getItemId(p: Int) = p.toLong()
-
-        private fun text() = TextView(this@MainActivity).apply {
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-            setSingleLine()
-            ellipsize = TextUtils.TruncateAt.END
-        }
-
         override fun getView(p: Int, convert: View?, parent: ViewGroup?): View {
-            val ch = channel ?: run {
-                val t = (convert as? TextView) ?: text().apply { setPadding(dp(12), dp(9), dp(12), dp(9)) }
-                t.text = label(p)
-                return t
-            }
             val row = (convert as? LinearLayout) ?: LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), dp(5), dp(12), dp(5))
-                addView(ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER },
-                    LinearLayout.LayoutParams(dp(48), dp(36)).apply { rightMargin = dp(12) })
-                addView(text(), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(text(17f), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(text(15f, Color.parseColor("#AAAAAA")), LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) })
             }
-            logos.load(ch(p), row.getChildAt(0) as ImageView, dp(36))
-            (row.getChildAt(1) as TextView).text = label(p)
+            val g = groups[p]
+            row.setPadding(if (g.indent) dp(28) else dp(12), dp(9), dp(12), dp(9))
+            (row.getChildAt(0) as TextView).text = g.label
+            (row.getChildAt(1) as TextView).text = g.rows.size.toString()
+            return row
+        }
+    }
+
+    /**
+     * Right column rows. Channel: logo | "N  Name" and, under it, the programme on air with its times and a thin
+     * progress bar. Programme (guide): logo | programme title and, under it, channel, times and what is left.
+     */
+    private inner class RowAdapter : BaseAdapter() {
+        override fun getCount() = shown.size
+        override fun getItem(p: Int): Any = p
+        override fun getItemId(p: Int) = p.toLong()
+        override fun getView(p: Int, convert: View?, parent: ViewGroup?): View {
+            val row = (convert as? LinearLayout) ?: LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(6), dp(12), dp(6))
+                addView(ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER },
+                    LinearLayout.LayoutParams(dp(52), dp(39)).apply { rightMargin = dp(12) })
+                val col = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+                col.addView(text(18f))
+                col.addView(text(14f, Color.parseColor("#C8C8C8")))
+                col.addView(bar(3), LinearLayout.LayoutParams(-1, dp(3)).apply { topMargin = dp(3) })
+                addView(col, LinearLayout.LayoutParams(0, -2, 1f))
+            }
+            val r = shown[p]
+            val col = row.getChildAt(1) as LinearLayout
+            val t1 = col.getChildAt(0) as TextView
+            val t2 = col.getChildAt(1) as TextView
+            val pb = col.getChildAt(2) as ProgressBar
+            logos.load(r.ch, row.getChildAt(0) as ImageView, dp(39))
+            val now = System.currentTimeMillis()
+            if (r.guide && r.prog != null) {
+                val pr = r.prog
+                t1.text = pr.title
+                t2.text = if (pr.isOn(now)) "${r.ch.number} ${r.ch.name}  ·  ${Epg.hhmm(pr.start)}–${Epg.hhmm(pr.stop)}  ·  mancano ${(pr.stop - now) / 60_000} min"
+                else "${r.ch.number} ${r.ch.name}  ·  alle ${Epg.hhmm(pr.start)} (tra ${(pr.start - now) / 60_000} min)"
+                t2.visibility = View.VISIBLE
+                pb.visibility = if (pr.isOn(now)) View.VISIBLE else View.GONE
+                pb.progress = pr.progress(now)
+            } else {
+                val top = groups.getOrNull(groupPos)?.label == TOP && search.text.isEmpty()
+                t1.text = "${r.ch.number}   ${r.ch.name}" + if (top) "   · " + Stats.format(stats.of(r.ch)) else ""
+                val pr = epg.now(r.ch, now)
+                if (pr != null) {
+                    t2.text = "${pr.title}  ·  ${Epg.hhmm(pr.start)}–${Epg.hhmm(pr.stop)}"
+                    t2.visibility = View.VISIBLE
+                    pb.visibility = View.VISIBLE
+                    pb.progress = pr.progress(now)
+                } else {
+                    t2.visibility = View.GONE
+                    pb.visibility = View.GONE
+                }
+            }
             return row
         }
     }
@@ -687,6 +917,8 @@ class MainActivity : Activity() {
     companion object {
         const val TOP = "★ Più guardati"
         const val ALL = "Tutti i canali"
+        const val ON_AIR = "In onda ora"
+        const val NEXT = "Tra poco"
     }
 }
 

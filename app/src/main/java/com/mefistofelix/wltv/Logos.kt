@@ -12,9 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.LruCache
 import android.widget.ImageView
-import okhttp3.Request
 import org.json.JSONObject
-import org.tukaani.xz.XZInputStream
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.Executors
@@ -36,51 +34,29 @@ class Logos(private val context: Context) {
     @Volatile private var byName: Map<String, String> = emptyMap()
     private val failed = HashSet<String>()
 
-    /** Loads the EPG icon map (cached; re-downloaded weekly), then calls [done] on the main thread. */
+    /** Loads the icon map saved last time (fast, before the guide is parsed), then calls [done] on the main thread. */
     fun init(done: () -> Unit) {
         pool.execute {
-            runCatching { if (mapFile.exists()) parseMap(mapFile.readText()) }
-            ui.post(done)
-            if (!mapFile.exists() || System.currentTimeMillis() - mapFile.lastModified() > 7 * 24 * 3600_000L) {
-                runCatching { downloadMap() }.onSuccess { ui.post(done) }
-            }
-        }
-    }
-
-    private fun parseMap(text: String) {
-        val o = JSONObject(text)
-        byId = o.getJSONObject("id").let { j -> j.keys().asSequence().associateWith { j.getString(it) } }
-        byName = o.getJSONObject("name").let { j -> j.keys().asSequence().associateWith { j.getString(it) } }
-    }
-
-    /** Reads only the <channel> part of the guide: it comes first, the programmes after it are skipped. */
-    private fun downloadMap() {
-        val req = Request.Builder().url(EPG).header("User-Agent", "WLTV ${Http.UA}").build()
-        val ids = HashMap<String, String>()
-        val names = HashMap<String, String>()
-        Http.client.newCall(req).execute().use { r ->
-            if (!r.isSuccessful) return
-            val reader = XZInputStream(r.body!!.byteStream()).bufferedReader()
-            val buf = StringBuilder()
-            val chunk = CharArray(64 * 1024)
-            while (true) {
-                val n = reader.read(chunk)
-                if (n < 0) break
-                buf.append(chunk, 0, n)
-                if (buf.indexOf("<programme") >= 0) break
-            }
-            val channel = Regex("""<channel id="([^"]*)">(.*?)</channel>""")
-            for (m in channel.findAll(buf)) {
-                val icon = Regex("""<icon src="([^"]+)"""").find(m.groupValues[2])?.groupValues?.get(1) ?: continue
-                ids[m.groupValues[1].lowercase()] = icon
-                for (d in Regex("""<display-name[^>]*>([^<]*)</display-name>""").findAll(m.groupValues[2])) {
-                    names.putIfAbsent(Search.norm(d.groupValues[1]), icon)
+            runCatching {
+                if (mapFile.exists()) {
+                    val o = JSONObject(mapFile.readText())
+                    byId = o.getJSONObject("id").let { j -> j.keys().asSequence().associateWith { j.getString(it) } }
+                    byName = o.getJSONObject("name").let { j -> j.keys().asSequence().associateWith { j.getString(it) } }
                 }
             }
+            ui.post(done)
         }
+    }
+
+    /** Icons of the guide channels ([Epg]), by guide id and by normalized name; saved for the next start. */
+    fun setMaps(ids: Map<String, String>, names: Map<String, String>) {
         if (ids.isEmpty()) return
-        mapFile.writeText(JSONObject().put("id", JSONObject(ids as Map<*, *>)).put("name", JSONObject(names as Map<*, *>)).toString())
         byId = ids; byName = names
+        pool.execute {
+            runCatching {
+                mapFile.writeText(JSONObject().put("id", JSONObject(ids as Map<*, *>)).put("name", JSONObject(names as Map<*, *>)).toString())
+            }
+        }
     }
 
     /**
