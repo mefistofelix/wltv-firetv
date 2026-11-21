@@ -83,29 +83,43 @@ class Logos(private val context: Context) {
         byId = ids; byName = names
     }
 
-    fun urlOf(ch: Channel): String? =
-        ch.logo.takeIf { it.startsWith("http") }
-            ?: byId[ch.tvgId.lowercase()]
-            ?: byName[Search.norm(ch.name)]
-            ?: byName[Search.norm(ch.tvgId)]
+    /**
+     * Logo addresses to try, best first: the list's own, the guide's by tvg-id, by name, and finally the guide id that
+     * is the longest prefix of the tvg-id (rai3tgrlombardia -> rai3), so regional editions get the network's logo.
+     */
+    fun urlsOf(ch: Channel): List<String> {
+        val out = LinkedHashSet<String>()
+        ch.logo.takeIf { it.startsWith("http") }?.let { out += it }
+        val id = ch.tvgId.lowercase()
+        byId[id]?.let { out += it }
+        byName[Search.norm(ch.name)]?.let { out += it }
+        byName[Search.norm(ch.tvgId)]?.let { out += it }
+        val nid = Search.norm(ch.tvgId.ifEmpty { ch.name })
+        (nid.length downTo 4).firstNotNullOfOrNull { byId[nid.substring(0, it)] }?.let { out += it }
+        return out.toList()
+    }
 
-    /** Shows the logo of [ch] in [view]: initials at once, the real logo when it is loaded. */
+    /** Shows the logo of [ch] in [view]: a cached logo or the initials at once, then the first logo that loads. */
     fun load(ch: Channel, view: ImageView, heightPx: Int) {
-        val url = urlOf(ch)
-        view.tag = url ?: ch.name
-        val hit = url?.let { memory.get(it) }
+        val urls = synchronized(failed) { urlsOf(ch).filter { it !in failed } }
+        val key = ch.key
+        view.tag = key
+        val hit = urls.firstNotNullOfOrNull { memory.get(it) }
         if (hit != null) {
             view.setImageBitmap(hit); return
         }
         view.setImageBitmap(initials(ch.name, heightPx))
-        if (url == null || synchronized(failed) { url in failed }) return
+        if (urls.isEmpty()) return
         pool.execute {
-            val bmp = runCatching { fetch(url, heightPx) }.getOrNull()
-            if (bmp == null) {
-                synchronized(failed) { failed += url }; return@execute
+            for (url in urls) {
+                val bmp = runCatching { fetch(url, heightPx) }.getOrNull()
+                if (bmp == null) {
+                    synchronized(failed) { failed += url }; continue
+                }
+                memory.put(url, bmp)
+                ui.post { if (view.tag == key) view.setImageBitmap(bmp) }
+                return@execute
             }
-            memory.put(url, bmp)
-            ui.post { if (view.tag == url) view.setImageBitmap(bmp) }
         }
     }
 
