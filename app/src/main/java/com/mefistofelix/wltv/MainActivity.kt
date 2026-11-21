@@ -610,6 +610,9 @@ class MainActivity : Activity() {
         }
         channelList = listView().apply {
             adapter = channelAdapter
+            // API 28: a focus requested before the panel's first layout is handed to the default view on layout;
+            // without this it is the search field, and focusing it pops up the Fire TV keyboard
+            if (android.os.Build.VERSION.SDK_INT >= 26) isFocusedByDefault = true
             setOnItemClickListener { _, _, pos, _ ->
                 shown.getOrNull(pos)?.let { play(it); hidePanel() }
             }
