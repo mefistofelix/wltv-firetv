@@ -622,10 +622,9 @@ class MainActivity : Activity() {
         panel.addView(cols, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(10) })
 
         root.addView(panel, FrameLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.52).toInt(), -1, Gravity.START))
+        // hidden until needed: a visible panel at start would give the search field the initial focus (and the keyboard)
+        panel.visibility = View.GONE
         setContentView(root)
-        root.viewTreeObserver.addOnGlobalFocusChangeListener { old, new ->
-            Log.i(tag, "focus ${old?.javaClass?.simpleName} -> ${new?.javaClass?.simpleName}", Throwable())
-        }
     }
 
     /** Text rows for both columns; [label] gives the text of a position. */
