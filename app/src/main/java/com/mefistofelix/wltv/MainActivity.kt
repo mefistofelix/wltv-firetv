@@ -452,6 +452,9 @@ class MainActivity : Activity() {
         } else if (code == KeyEvent.KEYCODE_BACK) {
             if (current != null) hidePanel() else finish()
             return true
+        } else if (code == KeyEvent.KEYCODE_DPAD_DOWN && search.hasFocus()) {
+            // the text field keeps ▼ for its cursor: go to the buttons below
+            hideKeyboard(); modeButton.requestFocus(); return true
         } else if (code == KeyEvent.KEYCODE_DPAD_LEFT && channelList.hasFocus()) {
             // ListView would pick the group row next to the focused row: keep the group being shown
             val keep = groupPos
@@ -891,8 +894,8 @@ class MainActivity : Activity() {
             if (r.guide && r.prog != null) {
                 val pr = r.prog
                 t1.text = pr.title
-                t2.text = if (pr.isOn(now)) "${r.ch.number} ${r.ch.name}  ·  ${Epg.hhmm(pr.start)}–${Epg.hhmm(pr.stop)}  ·  mancano ${(pr.stop - now) / 60_000} min"
-                else "${r.ch.number} ${r.ch.name}  ·  alle ${Epg.hhmm(pr.start)} (tra ${(pr.start - now) / 60_000} min)"
+                t2.text = if (pr.isOn(now)) "${Epg.hhmm(pr.start)}–${Epg.hhmm(pr.stop)} · ancora ${(pr.stop - now) / 60_000}'  ·  ${r.ch.name}"
+                else "alle ${Epg.hhmm(pr.start)} (tra ${(pr.start - now) / 60_000}')  ·  ${r.ch.name}"
                 t2.visibility = View.VISIBLE
                 pb.visibility = if (pr.isOn(now)) View.VISIBLE else View.GONE
                 pb.progress = pr.progress(now)
@@ -926,9 +929,11 @@ class MainActivity : Activity() {
 class SearchField(context: Context) : EditText(context) {
     var onBack: (() -> Unit)? = null
 
+    /** Back is taken here, before the keyboard and the activity: down is swallowed (it would close the panel). */
     override fun onKeyPreIme(keyCode: Int, event: KeyEvent): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-            onBack?.invoke(); return true
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.action == KeyEvent.ACTION_UP) onBack?.invoke()
+            return true
         }
         return super.onKeyPreIme(keyCode, event)
     }

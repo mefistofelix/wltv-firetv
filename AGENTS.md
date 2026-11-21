@@ -20,13 +20,19 @@ N = run number = versionCode). No local JDK/SDK on the dev PC.
   watch page, else hand off to the YouTube app. Twitch: GQL PlaybackAccessToken + usher.
 
 ## Code map (`app/src/main/java/com/mefistofelix/wltv/`)
-- `MainActivity.kt` — player (Media3 ExoPlayer + OkHttp data source, per-stream headers and Widevine), panel with
+- `MainActivity.kt` — two panel modes (channels / guide by programme), info banner with progress; player (Media3 ExoPlayer + OkHttp data source, per-stream headers and Widevine), panel with
   groups/channels ListViews, search field, buttons, remote key routing in `dispatchKeyEvent`, watch-time tick.
-- `Lists.kt` — index + list download and cache in `files/`, selected list, custom M3U URL.
-- `M3u.kt` — EXTINF parser. `Channel.key` = URL (stats key).
+- `Lists.kt` — sources, several on at once (prefs string set `sources`): `wltv:<Name>` (all.json), `world:<cc>`
+  (ListWorldTv.bin → iptv-org M3U per country), `cam:<Country>` (ListSkyLineWebcam.bin), `radio:<CC>` (ListWorldRadio.bin +
+  `worldradio/<CC>.bin`), `custom`. The .bin files on `www.worldtvlive.eu/world/files` are base64 of raw deflate.
+- `Epg.kt` — WLTV XMLTV guide `epg-guide.com/wltv.xz` (8 MiB XZ dictionary), downloaded at most every 12 h, parsed
+  with XmlPullParser keeping now-1h..now+30h; channels matched by tvg-id, then display name. Feeds rows, banner,
+  guide mode, programme search and the channel icon map of `Logos`.
+- `M3u.kt` — EXTINF parser; iptv-org `http-user-agent`/`http-referrer` and `#EXTVLCOPT` become a Kodi `url|Header=v`
+  suffix. `Channel.key` = URL (stats key), `Channel.source` = list label (groups per source).
 - `Stats.kt` — seconds watched per channel (prefs JSON), "Più guardati".
-- `Logos.kt` — channel logos: list `tvg-logo`, else icons of the WLTV EPG `http://epg-guide.com/wltv.xz` (XZ, only the
-  `<channel>` head is read; map cached weekly in `files/epg_icons.json`) by tvg-id, name, or longest tvg-id prefix
+- `Logos.kt` — channel logos: list `tvg-logo`, else the guide icons from `Epg` (map saved in `files/epg_icons.json` for
+  the next start) by tvg-id, name, or longest tvg-id prefix
   (TGR -> rai3); the next source is tried when one fails; else an initials tile. Images cached in `files/logos`.
 - `Search.kt` — fuzzy matching of dictated names (Italian number words → digits).
 - `Http.kt` — OkHttp client with shared cookie jar, browser headers, `match` = scrapers.findSingleMatch.
