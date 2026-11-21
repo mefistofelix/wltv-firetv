@@ -25,6 +25,9 @@ N = run number = versionCode). No local JDK/SDK on the dev PC.
 - `Lists.kt` — index + list download and cache in `files/`, selected list, custom M3U URL.
 - `M3u.kt` — EXTINF parser. `Channel.key` = URL (stats key).
 - `Stats.kt` — seconds watched per channel (prefs JSON), "Più guardati".
+- `Logos.kt` — channel logos: list `tvg-logo`, else icons of the WLTV EPG `http://epg-guide.com/wltv.xz` (XZ, only the
+  `<channel>` head is read; map cached weekly in `files/epg_icons.json`) by tvg-id, name, or longest tvg-id prefix
+  (TGR -> rai3); the next source is tried when one fails; else an initials tile. Images cached in `files/logos`.
 - `Search.kt` — fuzzy matching of dictated names (Italian number words → digits).
 - `Http.kt` — OkHttp client with shared cookie jar, browser headers, `match` = scrapers.findSingleMatch.
 

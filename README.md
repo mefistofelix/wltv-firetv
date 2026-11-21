@@ -29,6 +29,8 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
   del canale («Rai tre», «canale cinque», «la sette», «venti»). I risultati compaiono mentre parli; «Vai» sulla
   tastiera avvia il primo. Il tasto microfono del telecomando *fuori* dalla tastiera apre sempre Alexa: Fire OS non lo
   passa alle app.
+- **Loghi**: quelli della lista o, se mancano, quelli della guida EPG di WLTV (la stessa che Kodi usa per i loghi);
+  i TGR prendono il logo di Rai 3; senza logo compare un riquadro colorato con le iniziali.
 - I canali YouTube senza un flusso HLS diretto si aprono nell'app YouTube.
 
 ## Build
