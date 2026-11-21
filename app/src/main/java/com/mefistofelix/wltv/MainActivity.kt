@@ -83,6 +83,7 @@ class MainActivity : Activity() {
     private var digits = ""
     private var menuLongHandled = false
     private var backAt = 0L
+    private var ticks = 0
 
     private val groupAdapter = RowAdapter { pos -> groups[pos] }
     private val channelAdapter = RowAdapter { pos ->
@@ -134,6 +135,8 @@ class MainActivity : Activity() {
     private val tick = object : Runnable {
         override fun run() {
             current?.let { if (player.isPlaying) stats.add(it, 1) }
+            if (++ticks % 15 == 0) Log.d(tag, "tick state=${player.playbackState} pwr=${player.playWhenReady} " +
+                "playing=${player.isPlaying} sup=${player.playbackSuppressionReason} sec=${current?.let { stats.of(it) }}")
             ui.postDelayed(this, 1000)
         }
     }
@@ -185,7 +188,9 @@ class MainActivity : Activity() {
         groups = g
         groupAdapter.size = g.size
         val pos = g.indexOf(keep).takeIf { it >= 0 } ?: 0
-        groupList.setSelection(pos)
+        // setSelection would scroll the row to the top and hide the groups above it (★ Più guardati)
+        val row = groupList.getChildAt(0)?.height?.takeIf { it > 0 } ?: dp(44)
+        groupList.setSelectionFromTop(pos, if (pos < 6) pos * row else 0)
         showGroup(pos)
     }
 
@@ -389,6 +394,7 @@ class MainActivity : Activity() {
 
     private fun onSearchText(q: String) {
         if (q.isBlank()) {
+            status("${channels.size} canali")
             showGroup(groupList.selectedItemPosition.coerceAtLeast(0)); return
         }
         shown = Search.find(channels, q)
@@ -487,6 +493,7 @@ class MainActivity : Activity() {
     private fun button(text: String, onClick: () -> Unit) = Button(this).apply {
         this.text = text
         isAllCaps = false
+        setSingleLine()
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
         background = focusBg()
         setPadding(dp(14), dp(6), dp(14), dp(6))
@@ -495,10 +502,17 @@ class MainActivity : Activity() {
         setOnClickListener { onClick() }
     }
 
+    /** Orange highlight only in the column that has focus; the other one keeps a faint mark on its row. */
     private fun listView() = ListView(this).apply {
-        selector = GradientDrawable().apply {
-            setColor(Color.parseColor("#FF8A00")); cornerRadius = dp(6).toFloat(); setStroke(dp(2), Color.WHITE)
+        selector = StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply {
+                setColor(Color.parseColor("#FF8A00")); cornerRadius = dp(6).toFloat(); setStroke(dp(2), Color.WHITE)
+            })
+            addState(intArrayOf(), GradientDrawable().apply {
+                setColor(Color.parseColor("#26FFFFFF")); cornerRadius = dp(6).toFloat()
+            })
         }
+        setDrawSelectorOnTop(false)
         divider = null
         isVerticalScrollBarEnabled = true
         itemsCanFocus = false
@@ -563,7 +577,7 @@ class MainActivity : Activity() {
         buttons.addView(listButton)
         buttons.addView(button("Cerca") { openSearch() }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10) })
         buttons.addView(button("Aggiorna") { loadList(refresh = true) }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10) })
-        buttons.addView(button("Azzera più guardati") { resetStats() }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10) })
+        buttons.addView(button("Azzera più visti") { resetStats() }, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10) })
         panel.addView(buttons, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
 
         status = TextView(this).apply { setTextColor(Color.parseColor("#9AD4FF")); setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f) }
