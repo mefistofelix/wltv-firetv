@@ -350,7 +350,7 @@ object Resolver {
             Http.match(page, """"hlsManifestUrl":"([^"]+)"""").replace("\\u0026", "&").replace("\\/", "/")
         }.getOrDefault("")
         return if (hls.isNotEmpty()) Stream(hls, mapOf("User-Agent" to Http.UA))
-        else Stream("", external = "https://www.youtube.com/watch?v=$videoId")
+        else throw ResolveException("diretta su YouTube, non riproducibile qui")
     }
 
     // ---------------------------------------------------------------- SkylineWebcams (broadcaster/skylinewebcams.py)

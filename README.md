@@ -44,7 +44,8 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
   passa alle app.
 - **Loghi**: quelli della lista o, se mancano, quelli della guida EPG di WLTV (la stessa che Kodi usa per i loghi);
   i TGR prendono il logo di Rai 3; senza logo compare un riquadro colorato con le iniziali.
-- I canali YouTube senza un flusso HLS diretto si aprono nell'app YouTube.
+- I canali YouTube sono **saltati**: non compaiono negli elenchi (nell'addon aprivano il plugin YouTube) e l'app non
+  apre mai l'app YouTube.
 
 ## Build
 

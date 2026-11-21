@@ -16,8 +16,8 @@ N = run number = versionCode). No local JDK/SDK on the dev PC.
   sam, wedotv, antennasud, sole24, gamberorosso, legaseriea). When the addon gets a new hotfix
   (`https://worldlivetv.github.io/repo/plugin.video.wltvhelper.hotfix/hotfix.json`), diff it and port the changes.
 - Kodi LicenseKey `url|headers|R{SSM}|R` = `Stream.licenseUrl` + `licenseHeaders` (ExoPlayer posts the raw challenge).
-- Rai: relinker JSON `output=63&forceUserAgent=raiplayappletv` (HLS, usually clear). YouTube: `hlsManifestUrl` from the
-  watch page, else hand off to the YouTube app. Twitch: GQL PlaybackAccessToken + usher.
+- Rai: relinker JSON `output=63&forceUserAgent=raiplayappletv` (HLS, usually clear). YouTube entries are dropped from every list (`Lists.isYouTube`); a webcam falling
+  back to YouTube tries the watch page `hlsManifestUrl`, else it is "not available". Twitch: GQL PlaybackAccessToken + usher.
 
 ## Code map (`app/src/main/java/com/mefistofelix/wltv/`)
 - `MainActivity.kt` — two panel modes (channels / guide by programme), info banner with progress; player (Media3 ExoPlayer + OkHttp data source, per-stream headers and Widevine), panel with

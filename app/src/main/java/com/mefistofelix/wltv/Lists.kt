@@ -146,7 +146,14 @@ object Lists {
                 "radio" -> radioChannels(c, arg, refresh, label)
                 else -> null
             }
-        }.getOrNull()?.takeIf { it.isNotEmpty() }
+        }.getOrNull()?.filterNot { isYouTube(it.url) }?.takeIf { it.isNotEmpty() }
+    }
+
+    /** YouTube entries are skipped: they only open the YouTube app (the addon hands them to plugin.video.youtube). */
+    fun isYouTube(url: String): Boolean {
+        val u = url.lowercase()
+        return u.contains("/play/yt/") || u.startsWith("plugin://plugin.video.youtube") ||
+            u.contains("youtube.com/") || u.contains("youtu.be/")
     }
 
     private fun m3u(c: Context, id: String, url: String, refresh: Boolean, label: String): List<Channel>? {
