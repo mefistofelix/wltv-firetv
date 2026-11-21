@@ -3,8 +3,10 @@ package com.mefistofelix.wltv
 import java.text.Normalizer
 
 /**
- * Matching of spoken/typed channel names. Dictation gives "rai uno", "canale cinque", "la sette d",
+ * Matching of spoken/typed channel and programme names. Dictation gives "rai uno", "canale cinque", "la sette d",
  * "venti", so number words become digits and spaces, accents and punctuation are dropped before comparing.
+ * [Query] is prepared once per search; [Query.score] is cheap enough for thousands of rows (no edit distance unless
+ * the lengths are close).
  */
 object Search {
     private val numbers = mapOf(
@@ -16,45 +18,40 @@ object Search {
         "cinquanta" to "50", "one" to "1", "two" to "2", "three" to "3", "four" to "4", "five" to "5",
     )
     // words a user may say around the name: "metti", "canale", "su"
-    private val filler = setOf("metti", "guarda", "vai", "apri", "canale", "sul", "accendi")
+    private val filler = setOf("metti", "guarda", "vai", "apri", "canale", "sul", "accendi", "cerca", "trova")
+    private val marks = Regex("\\p{M}+")
+    private val split = Regex("[^a-z0-9]+")
 
     private fun words(s: String): List<String> {
-        val plain = Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "")
-        return plain.split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }.map { numbers[it] ?: it }
+        val plain = marks.replace(Normalizer.normalize(s.lowercase(), Normalizer.Form.NFD), "")
+        return plain.split(split).filter { it.isNotEmpty() }.map { numbers[it] ?: it }
     }
 
     fun norm(s: String) = words(s).joinToString("")
 
-    /**
-     * Channels matching [query], best first. A bare number also matches the channel number; [onAir] gives the title of
-     * the programme on air, so "un posto al sole" finds the channel showing it (a name match ranks a bit higher).
-     */
-    fun find(all: List<Channel>, query: String, onAir: (Channel) -> String? = { null }): List<Channel> {
-        val qw = words(query)
-        if (qw.isEmpty()) return emptyList()
-        val q = qw.joinToString("")
-        val qCore = qw.filterNot { it in filler }.joinToString("").ifEmpty { q }
-        val num = q.toIntOrNull()
-        val scored = ArrayList<Pair<Channel, Int>>()
-        for (ch in all) {
-            val n = norm(ch.name)
-            val s = maxOf(
-                if (num != null && ch.number == num) 100 else 0,
-                score(n, q),
-                if (qCore != q) score(n, qCore) - 5 else 0,
-                onAir(ch)?.let { t -> if (q.length >= 3) score(norm(t), q) - 8 else 0 } ?: 0,
-            )
-            if (s > 0) scored += ch to s
+    class Query(text: String) {
+        private val w = words(text)
+        val q = w.joinToString("")
+        private val core = w.filterNot { it in filler }.joinToString("").ifEmpty { q }
+        private val num = q.toIntOrNull()
+        val empty get() = q.isEmpty()
+
+        /** 0 = no match; higher is better. [name] and [title] already normalized with [norm]. */
+        fun score(name: String, number: Int?, title: String?): Int {
+            var s = 0
+            if (num != null && number == num) s = 100
+            s = maxOf(s, match(name, q), if (core != q) match(name, core) - 5 else 0)
+            if (title != null && q.length >= 3) s = maxOf(s, match(title, q) - 8, if (core != q) match(title, core) - 12 else 0)
+            return s
         }
-        return scored.sortedWith(compareByDescending<Pair<Channel, Int>> { it.second }.thenBy { it.first.number }).map { it.first }
     }
 
-    private fun score(n: String, q: String): Int = when {
+    private fun match(n: String, q: String): Int = when {
         q.isEmpty() -> 0
         n == q -> 95
         n.startsWith(q) -> 80 - (n.length - q.length).coerceAtMost(20)
         n.contains(q) -> 60 - (n.length - q.length).coerceAtMost(20)
-        q.length >= 4 && distance(n, q) <= q.length / 4 -> 40
+        q.length >= 4 && kotlin.math.abs(n.length - q.length) <= q.length / 4 && distance(n, q) <= q.length / 4 -> 40
         q.length >= 4 && n.length > q.length && distance(n.substring(0, q.length), q) <= q.length / 4 -> 30
         else -> 0
     }

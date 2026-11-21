@@ -105,6 +105,13 @@ class MainActivity : Activity() {
     private var menuLongHandled = false
     private var backAt = 0L
     private var groupPos = 0
+    private var guideRows: List<Row> = emptyList()
+    /** Active search: score by row key ([rowKey]); null = no search. */
+    private var hits: Map<String, Int>? = null
+    private var searchGen = 0
+    private val searchExec = Executors.newSingleThreadExecutor()
+    /** Normalized names and titles, filled by the search thread only. */
+    private val normNames = HashMap<String, String>()
 
     private val groupAdapter = GroupAdapter()
     private val rowAdapter = RowAdapter()
@@ -149,7 +156,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         ui.removeCallbacksAndMessages(null)
         player.release()
-        io.shutdownNow(); net.shutdownNow(); epgExec.shutdownNow()
+        io.shutdownNow(); net.shutdownNow(); epgExec.shutdownNow(); searchExec.shutdownNow()
         super.onDestroy()
     }
 
@@ -267,11 +274,22 @@ class MainActivity : Activity() {
             }
             onAir.sortBy { it.prog!!.title.lowercase() }
             next.sortBy { it.prog!!.start }
+            guideRows = onAir + next
             g += Group(ON_AIR, onAir)
             g += Group(NEXT, next)
             onAir.filter { it.prog!!.category.isNotEmpty() }.groupBy { it.prog!!.category.replaceFirstChar { c -> c.uppercase() } }
                 .toSortedMap().forEach { (cat, rows) -> g += Group(cat, rows) }
             if (onAir.isEmpty()) status(if (epg.parsedAt == 0L) "Guida TV in caricamento…" else "Nessun programma in guida per questi canali")
+        }
+        // a search narrows every group to its matches (best first) and hides the groups left empty
+        hits?.let { h ->
+            val rank = { r: Row -> h[rowKey(r)] ?: 0 }
+            val all = (if (guideMode) guideRows else channelRows(channels)).filter { rowKey(it) in h }.sortedByDescending(rank)
+            val narrowed = g.filter { it.label != ALL }.map { Group(it.label, it.rows.filter { r -> rowKey(r) in h }.sortedByDescending(rank), it.indent) }
+                .filter { it.rows.isNotEmpty() }
+            g.clear()
+            g += Group(RESULTS, all)
+            g += narrowed
         }
         groups = g
         groupAdapter.notifyDataSetChanged()
@@ -284,10 +302,9 @@ class MainActivity : Activity() {
 
     private fun showGroup(pos: Int) {
         groupPos = pos
-        if (search.text.isNotEmpty()) return
         shown = groups.getOrNull(pos)?.rows ?: emptyList()
         rowAdapter.notifyDataSetChanged()
-        val cur = shown.indexOfFirst { it.ch.key == current?.key }
+        val cur = if (hits != null) -1 else shown.indexOfFirst { it.ch.key == current?.key }
         channelList.setSelection(if (cur >= 0) cur else 0)
     }
 
@@ -296,6 +313,7 @@ class MainActivity : Activity() {
         guideMode = guide
         modeButton.text = if (guide) "Canali" else "Guida TV"
         search.setText("")
+        hits = null
         groupPos = 0
         groups = emptyList()
         refreshGroups()
@@ -514,26 +532,62 @@ class MainActivity : Activity() {
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(search.windowToken, 0)
     }
 
-    /** Channels by name, number or title of the programme on air. */
+    private fun rowKey(r: Row) = if (r.guide) "${r.ch.key}|${r.prog?.start}" else r.ch.key
+
+    /** Typing: wait for a pause, then search off the main thread (thousands of rows; dictation sends many updates). */
     private fun onSearchText(q: String) {
-        if (q.isBlank()) {
-            status("${channels.size} canali")
-            showGroup(groupPos); return
-        }
-        val now = System.currentTimeMillis()
-        shown = Search.find(channels, q) { epg.now(it, now)?.title }.map { Row(it, null) }
-        rowAdapter.notifyDataSetChanged()
-        channelList.setSelection(0)
-        status(if (shown.isEmpty()) "Nessun canale o programma per “$q”" else "${shown.size} risultati per “$q”")
+        ui.removeCallbacks(searchRun)
+        ui.postDelayed(searchRun, if (q.isBlank()) 0 else 250)
     }
 
-    /** IME "Go" (also sent after dictation): play the best match straight away. */
+    private val searchRun = Runnable {
+        val text = search.text.toString()
+        val gen = ++searchGen
+        if (text.isBlank()) {
+            if (hits != null) {
+                hits = null; groupPos = 0; refreshGroups()
+            }
+            status(if (guideMode) "Programmi in onda e prossimi" else "${channels.size} canali")
+            return@Runnable
+        }
+        val guide = guideMode
+        val rows = if (guide) guideRows else channelRows(channels)
+        searchExec.execute {
+            val query = Search.Query(text)
+            val now = System.currentTimeMillis()
+            val found = HashMap<String, Int>()
+            for (r in rows) {
+                val name = normNames.getOrPut(r.ch.name) { Search.norm(r.ch.name) }
+                val title = (if (guide) r.prog else epg.now(r.ch, now))?.title?.let { t -> normNames.getOrPut(t) { Search.norm(t) } }
+                val s = query.score(name, r.ch.number, title)
+                if (s > 0) found[rowKey(r)] = s
+            }
+            ui.post {
+                if (gen != searchGen || search.text.toString() != text) return@post
+                hits = found
+                groupPos = 0
+                refreshGroups()
+                status(if (found.isEmpty()) "Nessun risultato per “$text”" else "${found.size} risultati per “$text”")
+            }
+        }
+    }
+
+    /** IME "Go": play the best match straight away. */
     private fun onSearchGo() {
-        val best = shown.firstOrNull() ?: return
+        ui.removeCallbacks(searchRun)
+        searchRun.run()
+        val best = groups.firstOrNull { it.label == RESULTS }?.rows?.firstOrNull() ?: return
         hideKeyboard()
         search.setText("")
         play(best.ch)
         hidePanel()
+    }
+
+    /** Dictation commits whole words at once: when it settles, close the keyboard and show the results. */
+    private val dictationDone = Runnable {
+        if (!search.hasFocus()) return@Runnable
+        hideKeyboard()
+        channelList.requestFocus()
     }
 
     // ------------------------------------------------------------------ list chooser
@@ -805,19 +859,33 @@ class MainActivity : Activity() {
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
             setSingleLine()
-            imeOptions = EditorInfo.IME_ACTION_GO
-            inputType = InputType.TYPE_CLASS_TEXT
+            // same setup as FireBro's command bar, where the Fire TV keyboard dictation works: no suggestions
+            // (dictation would arrive as composing text) and no full-screen extract editor
+            imeOptions = EditorInfo.IME_ACTION_GO or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             background = GradientDrawable().apply { setColor(Color.parseColor("#22FFFFFF")); cornerRadius = dp(6).toFloat() }
             setPadding(dp(12), dp(8), dp(12), dp(8))
             setOnFocusChangeListener { v, f ->
                 (v.background as GradientDrawable).setStroke(if (f) dp(3) else 0, Color.parseColor("#FF8A00"))
             }
+            setOnClickListener {
+                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(this, 0)
+            }
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    // dictation commits whole words at once; typing adds one character at a time
+                    ui.removeCallbacks(dictationDone)
+                    if (count - before >= 4) ui.postDelayed(dictationDone, 1500)
+                }
                 override fun afterTextChanged(s: Editable?) = onSearchText(s?.toString().orEmpty())
             })
-            setOnEditorActionListener { _, _, _ -> onSearchGo(); true }
+            setOnEditorActionListener { _, actionId, event ->
+                val enter = event != null && event.keyCode == KeyEvent.KEYCODE_ENTER
+                if (enter && event!!.action != KeyEvent.ACTION_DOWN) return@setOnEditorActionListener true
+                if (enter || actionId != EditorInfo.IME_ACTION_UNSPECIFIED) onSearchGo()
+                true
+            }
             onBack = { hideKeyboard(); channelList.requestFocus() }
         }
         panel.addView(search, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
@@ -841,8 +909,7 @@ class MainActivity : Activity() {
             adapter = groupAdapter
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                    // the user moving through the groups leaves the search results
-                    if (groupList.hasFocus() && search.text.isNotEmpty()) search.setText("")
+                    // while searching, the groups are narrowed to the results: moving through them keeps the search
                     showGroup(pos)
                 }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
@@ -947,6 +1014,7 @@ class MainActivity : Activity() {
         const val ALL = "Tutti i canali"
         const val ON_AIR = "In onda ora"
         const val NEXT = "Tra poco"
+        const val RESULTS = "Risultati"
     }
 }
 
