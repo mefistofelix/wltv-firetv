@@ -623,6 +623,9 @@ class MainActivity : Activity() {
 
         root.addView(panel, FrameLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.52).toInt(), -1, Gravity.START))
         setContentView(root)
+        root.viewTreeObserver.addOnGlobalFocusChangeListener { old, new ->
+            Log.i(tag, "focus ${old?.javaClass?.simpleName} -> ${new?.javaClass?.simpleName}", Throwable())
+        }
     }
 
     /** Text rows for both columns; [label] gives the text of a position. */
