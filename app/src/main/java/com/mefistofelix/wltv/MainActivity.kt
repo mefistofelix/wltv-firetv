@@ -379,18 +379,20 @@ class MainActivity : Activity() {
             panel.visibility = View.VISIBLE
             refreshGroups()
         }
+        // after the layout pass: a list that has just been filled does not keep a focus requested now
         channelList.requestFocus()
+        panel.post { if (!search.hasFocus() && panel.findFocus() == null) channelList.requestFocus() }
     }
 
     private fun hidePanel() {
         hideKeyboard()
         panel.visibility = View.GONE
-        playerView.requestFocus()
     }
 
     private fun openSearch() {
         showPanel()
         search.requestFocus()
+        panel.post { search.requestFocus() }
         ui.postDelayed({
             (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(search, InputMethodManager.SHOW_IMPLICIT)
         }, 150)
@@ -534,7 +536,9 @@ class MainActivity : Activity() {
             setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             setKeepContentOnPlayerReset(false)
-            isFocusable = true
+            // keys go through dispatchKeyEvent; the player (and its hidden controller) must never take focus
+            isFocusable = false
+            descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
         }
         root.addView(playerView, FrameLayout.LayoutParams(-1, -1))
 
