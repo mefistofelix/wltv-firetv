@@ -20,8 +20,8 @@ N = run number = versionCode). No local JDK/SDK on the dev PC.
   back to YouTube tries the watch page `hlsManifestUrl`, else it is "not available". Twitch: GQL PlaybackAccessToken + usher.
 
 ## Code map (`app/src/main/java/com/mefistofelix/wltv/`)
-- `MainActivity.kt` — two panel modes (channels / guide by programme), info banner with progress; player (Media3 ExoPlayer + OkHttp data source, per-stream headers and Widevine). Panel = settings column (left edge) + ONE list (right edge: `items` of `Header` dividers and `Row`s, most watched copies on top, folder = "source › group" on dividers and rows); search narrows it keeping the place (`sel`/`anchor`/`movedInResults`, Back resets); older notes:
-  groups/channels ListViews, search field, buttons, remote key routing in `dispatchKeyEvent`, watch-time tick.
+- `MainActivity.kt` — two panel modes (channels / guide by programme), info banner with progress; player (Media3 ExoPlayer + OkHttp data source, per-stream headers and Widevine). Panel = settings column (left edge) + ONE list (right edge: `items` of `Header` dividers and `Row`s, most watched copies on top, folder = "source › group" on dividers and rows); search narrows it keeping the place (`sel`/`anchor`/`movedInResults`, Back resets);
+  remote key routing in `dispatchKeyEvent` (Menu = search, long Menu = refresh, ⏪⏩ = folders in the list), watch-time tick.
 - `Lists.kt` — sources, several on at once (prefs string set `sources`): `wltv:<Name>` (all.json), `world:<cc>`
   (ListWorldTv.bin → iptv-org M3U per country), `cam:<Country>` (ListSkyLineWebcam.bin), `radio:<CC>` (ListWorldRadio.bin +
   `worldradio/<CC>.bin`), `custom`. The .bin files on `www.worldtvlive.eu/world/files` are base64 of raw deflate.
