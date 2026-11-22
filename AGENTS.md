@@ -37,7 +37,8 @@ N = run number = versionCode). No local JDK/SDK on the dev PC.
 - `Search.kt` — fuzzy matching of dictated names (Italian number words → digits).
 - `Updater.kt` / `Relauncher.kt` — self-update as in FireBro: `firetv-apps/wltv.json` checked in `onResume` (2 min
   throttle), dialog, SHA-256 checked download, PackageInstaller session, reopen after our own update; Fire OS 6
-  launcher tile refresh. Published by `scripts/publish-update.sh` (Actions with secret `FIRETV_APPS_TOKEN`, or by hand).
+  launcher tile refresh. Published from the dev PC as in FireBro: after `git push`, `bash scripts/release.sh` (waits for the Actions build,
+  downloads it, runs `scripts/publish-update.sh` with the local gh login; no token in this public repo).
 - `Http.kt` — OkHttp client with shared cookie jar, browser headers, `match` = scrapers.findSingleMatch.
 
 ## Device facts (from the sibling FireBro project)

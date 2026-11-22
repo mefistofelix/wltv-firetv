@@ -1,10 +1,7 @@
 #!/bin/bash
 # Offers an APK to the installed WLTV apps (Updater.kt): uploads it as release wltv-N of the public repository
 # mefistofelix/firetv-apps and points wltv.json in that repository at it (same scheme as FireBro's firebro.json).
-# usage: bash scripts/publish-update.sh N path/to/WLTV-N.apk
-#   - GitHub Actions runs it after each build when the secret FIRETV_APPS_TOKEN exists (token allowed to write
-#     contents of mefistofelix/firetv-apps);
-#   - by hand: bash scripts/publish-update.sh N out/apk/WLTV-N.apk (uses the local gh login).
+# usage: bash scripts/publish-update.sh N path/to/WLTV-N.apk   (scripts/release.sh calls it; local gh login)
 set -e
 N="$1"; APK="$2"
 [ -n "$N" ] && [ -f "$APK" ] || { echo "usage: publish-update.sh N apk"; exit 2; }

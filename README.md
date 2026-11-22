@@ -78,6 +78,6 @@ Se c'è una versione più nuova la propone: *Installa* la scarica, ne controlla 
 installazione di Fire TV (serve confermare con «Installa»); *Più tardi* la ripropone dopo 12 ore. Dopo
 l'aggiornamento WLTV si riapre da sola. La prima volta Fire OS chiede di attivare *Installa app sconosciute* per WLTV.
 
-La pubblicazione (`scripts/publish-update.sh`: APK nella release `wltv-N` di firetv-apps e `wltv.json`) la fa
-GitHub Actions dopo ogni build se il repository ha il secret `FIRETV_APPS_TOKEN` (token con permesso di scrittura
-sui contenuti di firetv-apps); altrimenti si lancia a mano: `bash scripts/publish-update.sh N out/apk/WLTV-N.apk`.
+La pubblicazione si fa dal PC come in FireBro, con il login `gh` locale (nessun token salvato nel repository):
+dopo `git push`, `bash scripts/release.sh` aspetta la build di GitHub Actions, scarica l'APK in `out/apk` e lo
+pubblica con `scripts/publish-update.sh` (release `wltv-N` di firetv-apps e `wltv.json`).
