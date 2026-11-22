@@ -1,6 +1,6 @@
-# WLTV for Fire TV — agent notes
+# Fire TV Live (WLTV for Fire TV) — agent notes
 
-Live TV player for Fire TV that replaces Kodi + the World Live TV addon (`plugin.video.wltvhelper`, Kodi repo
+Live TV player for Fire TV (launcher name "Fire TV Live", package com.mefistofelix.wltv) that replaces Kodi + the World Live TV addon (`plugin.video.wltvhelper`, Kodi repo
 https://worldlivetv.github.io/repo/, GitHub WorldLiveTV/WorldLiveTV.github.io). UI strings Italian, code English,
 user docs `README.md` (Italian). Public repo, APK built by GitHub Actions on every push to `main` (release `build-N`,
 N = run number = versionCode). No local JDK/SDK on the dev PC.
@@ -30,6 +30,7 @@ N = run number = versionCode). No local JDK/SDK on the dev PC.
   guide mode, programme search and the channel icon map of `Logos`.
 - `M3u.kt` — EXTINF parser; iptv-org `http-user-agent`/`http-referrer` and `#EXTVLCOPT` become a Kodi `url|Header=v`
   suffix. `Channel.key` = URL (stats key), `Channel.source` = list label (groups per source).
+- `Favorites.kt` — favourite channels stored whole (prefs JSON), so they stay when their list is off; long OK toggles.
 - `Stats.kt` — seconds watched per channel (prefs JSON), "Più guardati".
 - `Logos.kt` — channel logos: list `tvg-logo`, else the guide icons from `Epg` (map saved in `files/epg_icons.json` for
   the next start) by tvg-id, name, or longest tvg-id prefix

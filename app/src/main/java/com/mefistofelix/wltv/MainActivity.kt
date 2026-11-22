@@ -58,9 +58,9 @@ import java.util.concurrent.Executors
  * guide (rows = programmes on air or coming next; OK plays the channel showing it).
  * The search narrows the list without losing the place: the row the user was on stays selected when it is still in
  * the results, and Back (or clearing the text) puts the full list back on that row, or on the result the user moved to.
- * Remote, video in front: ▲▼ / CH± zap, OK or ◀ = channels, ▶ or ⏩ = guide, Menu = search (voice: mic of the Fire TV
+ * Remote, video in front: ▲▼ / CH± zap, OK or ◀ = channels, long OK = favourite on/off, ▶ or ⏩ = guide, Menu = search (voice: mic of the Fire TV
  * keyboard), long Menu = re-download, digits = channel number, ⏯ = reload.
- * In the list: ◀ = settings, ▲ from the first row = search field, Menu = search, Back = reset the search, then close,
+ * In the list: long OK = favourite on/off (favourites are kept whole, see [Favorites]), ◀ = settings, ▲ from the first row = search field, Menu = search, Back = reset the search, then close,
  * ⏪ ⏩ = previous / next folder.
  */
 @OptIn(UnstableApi::class)
@@ -72,6 +72,7 @@ class MainActivity : Activity() {
     private val epgExec = Executors.newSingleThreadExecutor()
     private val prefs by lazy { getSharedPreferences("main", Context.MODE_PRIVATE) }
     private lateinit var stats: Stats
+    private lateinit var favs: Favorites
     private lateinit var logos: Logos
     private lateinit var epg: Epg
 
@@ -99,12 +100,14 @@ class MainActivity : Activity() {
     private var chanPos = 0
     private var chanTop = 0
 
-    /** A channel row, or (guide mode) a programme of that channel; [top] = copy in the "most watched" block. */
-    private class Row(val ch: Channel, val prog: Prog?, val guide: Boolean = false, val top: Boolean = false)
+    /** A channel row, or (guide mode) a programme of that channel; [block]: 0 = its folder, [FAV] / [TOP] = copy on top. */
+    private class Row(val ch: Channel, val prog: Prog?, val guide: Boolean = false, val block: Int = 0) {
+        val copy get() = block != 0
+    }
     /** A small divider of the list: a folder (source › group), the most watched block, the results. */
     private class Header(val label: String, val count: Int)
     /** Where the user is in the list, kept across rebuilds (search, refresh, guide updates). */
-    private data class Pos(val ch: String, val top: Boolean = false, val start: Long? = null)
+    private data class Pos(val ch: String, val block: Int = 0, val start: Long? = null)
 
     private var channels: List<Channel> = emptyList()
     private var sourceTitles: List<String> = emptyList()
@@ -117,6 +120,9 @@ class MainActivity : Activity() {
     private var lastStream: Stream? = null
     private var digits = ""
     private var menuLongHandled = false
+    /** OK pressed with the video in front: a long press toggles the favourite, a short one opens the panel. */
+    private var okDown = false
+    private var okLongHandled = false
     private var backAt = 0L
     private var guideRows: List<Row> = emptyList()
     /** The row the user is on; [anchor] = the row they were on when the search started. */
@@ -141,6 +147,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         stats = Stats(this)
+        favs = Favorites(this)
         logos = Logos(this)
         epg = Epg(this)
         buildUi()
@@ -207,7 +214,7 @@ class MainActivity : Activity() {
         val size = if (r.size > 0) " (" + String.format(java.util.Locale.ITALY, "%.1f", r.size / 1048576.0) + " MB)" else ""
         val d = AlertDialog.Builder(this)
             .setTitle("Aggiornamento disponibile")
-            .setMessage("È disponibile WLTV ${r.name}$size. Installata: 0.1.${updater.installedCode}.\n\n" +
+            .setMessage("È disponibile Fire TV Live ${r.name}$size. Installata: 0.1.${updater.installedCode}.\n\n" +
                 "Dopo lo scaricamento si apre la schermata di installazione di Fire TV: conferma con «Installa».")
             .setPositiveButton("Installa") { _, _ -> startUpdate(r) }
             .setNegativeButton("Più tardi") { _, _ -> updater.snooze(r) }
@@ -224,7 +231,7 @@ class MainActivity : Activity() {
             return
         }
         val note = text(16f).apply { setPadding(dp(24), dp(16), dp(24), dp(8)); text = "Scaricamento… 0%" }
-        val d = AlertDialog.Builder(this).setTitle("WLTV ${r.name}").setView(note).setCancelable(false).create()
+        val d = AlertDialog.Builder(this).setTitle("Fire TV Live ${r.name}").setView(note).setCancelable(false).create()
         d.show()
         updater.install(this, r,
             progress = { p -> ui.post { note.text = "Scaricamento… $p%" } },
@@ -236,8 +243,8 @@ class MainActivity : Activity() {
     private fun askInstallPermission(r: Updater.Release) {
         val d = AlertDialog.Builder(this)
             .setTitle("Permesso per installare")
-            .setMessage("Per aggiornarsi WLTV deve poter installare app. Serve una volta sola:\n\n" +
-                "Impostazioni → La mia Fire TV → Opzioni sviluppatore → Installa app sconosciute → WLTV: ATTIVO\n\n" +
+            .setMessage("Per aggiornarsi Fire TV Live deve poter installare app. Serve una volta sola:\n\n" +
+                "Impostazioni → La mia Fire TV → Opzioni sviluppatore → Installa app sconosciute → Fire TV Live: ATTIVO\n\n" +
                 "Poi torna qui e premi di nuovo «Installa».")
             .setPositiveButton("Apri impostazioni") { _, _ ->
                 val tries = listOf(
@@ -340,7 +347,7 @@ class MainActivity : Activity() {
                 status((if (refresh) "Elenchi aggiornati: " else "") + "${unique.size} canali$note")
                 if (current == null) {
                     val last = prefs.getString("last", null)
-                    val ch = channels.firstOrNull { it.key == last }
+                    val ch = pool().firstOrNull { it.key == last }
                     if (ch != null) play(ch) else showPanel()
                 }
                 then?.invoke()
@@ -350,18 +357,38 @@ class MainActivity : Activity() {
 
     private fun setChannels(list: List<Channel>, titles: List<String>) {
         channels = list
+        favs.refresh(list)
+        byKey = list.associateBy { it.key }
         sourceTitles = titles
         val name = when (titles.size) {
             0 -> ""
             1 -> titles[0]
             else -> "${titles[0]} + ${titles.size - 1}"
         }
-        header.text = "WLTV ${updater.installedCode}"
+        header.text = "Fire TV Live ${updater.installedCode}"
         listName = name
         updateTitle()
         listButton.text = "Elenchi (${titles.size})"
         current = current?.let { c -> channels.firstOrNull { it.key == c.key } ?: c }
         rebuild()
+    }
+
+    private var byKey: Map<String, Channel> = emptyMap()
+
+    /** Loaded channels plus the favourites whose list is off: what search and the guide look through. */
+    private fun pool(): List<Channel> {
+        val extra = favs.all().filter { it.key !in byKey }
+        return if (extra.isEmpty()) channels else channels + extra
+    }
+
+    /** Long OK on a channel (list, or the video in front): in or out of the favourites, saved at once. */
+    private fun toggleFavorite(ch: Channel) {
+        val on = favs.toggle(ch)
+        val note = if (on) "♥ Aggiunto ai preferiti: ${ch.name}" else "Tolto dai preferiti: ${ch.name}"
+        if (panel.visibility == View.VISIBLE) {
+            status(note)
+            rebuild()
+        } else info(ch, note)
     }
 
     private var listName = ""
@@ -382,7 +409,7 @@ class MainActivity : Activity() {
     }
 
     private fun hitKey(r: Row) = if (r.guide) "${r.ch.key}\u0000${r.prog?.start}" else r.ch.key
-    private fun posOf(r: Row) = Pos(r.ch.key, r.top, r.prog?.start)
+    private fun posOf(r: Row) = Pos(r.ch.key, r.block, r.prog?.start)
 
     /**
      * The list. Channels: most watched (copies), then every channel under its folder divider, in list order.
@@ -394,15 +421,20 @@ class MainActivity : Activity() {
         val h = hits
         if (!guideMode) {
             if (h != null) {
-                val rows = channels.filter { it.key in h }.sortedByDescending { h[it.key] }
+                val rows = pool().filter { it.key in h }.sortedByDescending { h[it.key] }
                 out += Header(if (rows.isEmpty()) "Nessun risultato" else RESULTS, rows.size)
                 rows.forEach { out += Row(it, null) }
                 return out
             }
+            val fav = favs.all().map { f -> byKey[f.key] ?: f }
+            if (fav.isNotEmpty()) {
+                out += Header(FAVS, fav.size)
+                fav.forEach { out += Row(it, null, block = FAV_BLOCK) }
+            }
             val top = stats.top(channels)
             if (top.isNotEmpty()) {
                 out += Header(TOP, top.size)
-                top.forEach { out += Row(it, null, top = true) }
+                top.forEach { out += Row(it, null, block = TOP_BLOCK) }
             }
             val byFolder = LinkedHashMap<String, MutableList<Channel>>()
             for (c in channels) byFolder.getOrPut(folderOf(c)) { ArrayList() } += c
@@ -415,7 +447,7 @@ class MainActivity : Activity() {
         val now = System.currentTimeMillis()
         val onAir = ArrayList<Row>()
         val next = ArrayList<Row>()
-        for (ch in channels.distinctBy { epg.idOf(it) ?: it.key }) {
+        for (ch in pool().distinctBy { epg.idOf(it) ?: it.key }) {
             epg.now(ch, now)?.let { onAir += Row(ch, it, guide = true) }
             epg.next(ch, now)?.let { if (it.start - now < 4 * 3600_000L) next += Row(ch, it, guide = true) }
         }
@@ -442,8 +474,8 @@ class MainActivity : Activity() {
         for ((i, it) in items.withIndex()) {
             val r = it as? Row ?: continue
             if (r.ch.key != p.ch) continue
-            if (r.top == p.top && r.prog?.start == p.start) return i
-            if (sameBlock < 0 && r.top == p.top) sameBlock = i
+            if (r.block == p.block && r.prog?.start == p.start) return i
+            if (sameBlock < 0 && r.block == p.block) sameBlock = i
             if (any < 0) any = i
         }
         return if (sameBlock >= 0) sameBlock else any
@@ -568,7 +600,7 @@ class MainActivity : Activity() {
 
     /** ▲▼ with the video in front: the channels of the list as it is (results while searching), not the copies on top. */
     private fun zap(step: Int) {
-        val visible = items.mapNotNull { (it as? Row)?.takeIf { r -> !r.top }?.ch }.distinctBy { it.key }
+        val visible = items.mapNotNull { (it as? Row)?.takeIf { r -> !r.copy }?.ch }.distinctBy { it.key }
         val list = if (visible.any { it.key == current?.key }) visible else channels
         if (list.isEmpty()) return
         val i = list.indexOfFirst { it.key == current?.key }
@@ -593,8 +625,24 @@ class MainActivity : Activity() {
             }
             return true
         }
-        if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
         val panelOpen = panel.visibility == View.VISIBLE
+        if ((code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) && (!panelOpen || okDown)) {
+            // video in front: short OK = channels, long OK = favourite on / off for the channel playing
+            when (event.action) {
+                KeyEvent.ACTION_DOWN -> when (event.repeatCount) {
+                    0 -> { okDown = true; okLongHandled = false }
+                    1 -> { okLongHandled = true; current?.let { toggleFavorite(it) } }
+                }
+                KeyEvent.ACTION_UP -> {
+                    if (okDown && !okLongHandled && !panelOpen) {
+                        setMode(false); showPanel()
+                    }
+                    okDown = false
+                }
+            }
+            return true
+        }
+        if (event.action != KeyEvent.ACTION_DOWN) return super.dispatchKeyEvent(event)
         if (code in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 && !search.hasFocus()) {
             digit(code - KeyEvent.KEYCODE_0); return true
         }
@@ -607,7 +655,7 @@ class MainActivity : Activity() {
             when (code) {
                 KeyEvent.KEYCODE_DPAD_UP -> { zap(-1); return true }
                 KeyEvent.KEYCODE_DPAD_DOWN -> { zap(1); return true }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_LEFT -> {
+                KeyEvent.KEYCODE_DPAD_LEFT -> {
                     setMode(false); showPanel(); return true
                 }
                 KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { setMode(true); showPanel(); return true }
@@ -727,7 +775,7 @@ class MainActivity : Activity() {
             panel.visibility = View.VISIBLE
             bannerBox.visibility = View.GONE
             val c = current
-            val target = if (c != null && sel?.ch != c.key) Pos(c.key, top = sel?.top == true) else sel
+            val target = if (c != null && sel?.ch != c.key) Pos(c.key, block = sel?.block ?: 0) else sel
             rebuild(target, if (target == sel) chanTop else dp(60))
         }
         // after the layout pass: a list that has just been filled does not keep a focus requested now
@@ -769,7 +817,7 @@ class MainActivity : Activity() {
             return@Runnable
         }
         val guide = guideMode
-        val rows = if (guide) guideRows else channels.map { Row(it, null) }
+        val rows = if (guide) guideRows else pool().map { Row(it, null) }
         val folders = rows.map { metaOf(it) }
         searchExec.execute {
             val query = Search.Query(text)
@@ -798,7 +846,7 @@ class MainActivity : Activity() {
             anchor = sel; anchorTop = chanTop
         }
         hits = found
-        val keep = anchor?.let { a -> Pos(a.ch, false, a.start) }
+        val keep = anchor?.let { a -> Pos(a.ch, 0, a.start) }
         val kept = keep != null && (if (guideMode) found.keys.any { it.startsWith(keep.ch + "\u0000") } else keep.ch in found)
         rebuild(if (kept) keep else null, if (kept) dp(60) else 0)
         resultStart = sel
@@ -813,7 +861,7 @@ class MainActivity : Activity() {
         if (hits == null && search.text.isEmpty()) return
         ui.removeCallbacks(searchRun)
         searchGen++
-        val target = if (movedInResults) sel?.let { Pos(it.ch, false, it.start) } else anchor
+        val target = if (movedInResults) sel?.let { Pos(it.ch, 0, it.start) } else anchor
         val top = if (movedInResults) chanTop else anchorTop
         hits = null
         anchor = null
@@ -857,69 +905,277 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ list chooser
 
-    /**
-     * Sections → lists of sources with checkboxes. No confirm buttons: every tick is saved at once, Back goes up
-     * one level, and leaving the sections reloads the channels if anything changed.
-     */
     private fun chooseLists() {
         status("Scarico gli elenchi disponibili…")
         net.execute {
             val cat = Lists.catalog(this, true)
             ui.post {
                 status("")
-                val before = Lists.selected(this)
-                sectionsDialog(cat, before.toMutableSet(), before)
+                ListsManager(cat).show()
             }
         }
     }
 
-    private fun sectionsDialog(cat: Map<String, List<Lists.Source>>, chosen: MutableSet<String>, before: Set<String>) {
-        val sections = Lists.SECTIONS.filter { cat[it]?.isNotEmpty() == true }
-        val labels = sections.map { s ->
-            val n = cat[s]!!.count { it.id in chosen }
-            "$s  ·  ${cat[s]!!.size} elenchi" + if (n > 0) "  ·  $n attivi" else ""
-        } + ("URL personalizzato…" + if (Lists.CUSTOM in chosen) "  ·  attivo" else "")
-        var next = false // a sub-dialog opens: not leaving yet
-        AlertDialog.Builder(this)
-            .setTitle("Elenchi canali (${chosen.size} attivi)")
-            .setItems(labels.map { it as CharSequence }.toTypedArray()) { _, which ->
-                next = true
-                if (which < sections.size) sourcesDialog(cat, sections[which], chosen, before) else askCustomUrl(cat, chosen, before)
-            }
-            .setOnDismissListener { if (!next && chosen != before) reloadSources() }
-            .show()
-    }
+    /**
+     * Every list in ONE screen: the active ones on top, then the sections (Liste WLTV, TV dal mondo, Webcam, Radio)
+     * each with a "Tutti" row, and the custom URL. OK ticks a row and saves at once (no confirm button). ☰ or ▲ from
+     * the top = search (dictation too); Back with a search clears it and goes back to the row the user was on, Back
+     * again closes and reloads the channels if anything changed.
+     */
+    private inner class ListsManager(private val cat: Map<String, List<Lists.Source>>) {
+        private val before = Lists.selected(this@MainActivity)
+        private val chosen = before.toMutableSet()
+        private val sources = Lists.SECTIONS.flatMap { cat[it].orEmpty() }
+        private val byId = sources.associateBy { it.id }
+        private val norms = sources.associate { it.id to Search.norm(it.title + " " + it.section) }
+        private val dialog = android.app.Dialog(this@MainActivity, android.R.style.Theme_DeviceDefault_Dialog_NoActionBar)
+        private val title = text(19f, bold = true)
+        private val field = SearchField(this@MainActivity)
+        private val list = listView()
+        /** Rows: String = divider, ALL_PREFIX + section = "Tutti", Source, ACTIVE_PREFIX + id = copy on top, CUSTOM_ROW. */
+        private var rows: List<Any> = emptyList()
+        private var selKey: String? = null
+        private var anchorKey: String? = null
+        private var query = ""
 
-    /** First row ticks or clears the whole section; each tick is saved right away. */
-    private fun sourcesDialog(cat: Map<String, List<Lists.Source>>, section: String, chosen: MutableSet<String>, before: Set<String>) {
-        val items = cat[section]!!
-        fun allOn() = items.all { it.id in chosen }
-        val labels = listOf<CharSequence>("Seleziona tutti / deseleziona tutti") + items.map { it.title }
-        val checked = BooleanArray(items.size + 1) { if (it == 0) allOn() else items[it - 1].id in chosen }
-        lateinit var dialog: AlertDialog
-        dialog = AlertDialog.Builder(this)
-            .setTitle("$section (${items.count { it.id in chosen }}/${items.size})")
-            .setMultiChoiceItems(labels.toTypedArray(), checked) { _, which, on ->
-                // AlertDialog re-reads [checked] for rows scrolled into view: keep it in step with the list view
-                if (which == 0) {
-                    if (on) items.forEach { chosen += it.id } else items.forEach { chosen -= it.id }
-                    for (i in items.indices) {
-                        checked[i + 1] = on; dialog.listView.setItemChecked(i + 1, on)
-                    }
-                } else {
-                    if (on) chosen += items[which - 1].id else chosen -= items[which - 1].id
-                    checked[0] = allOn(); dialog.listView.setItemChecked(0, checked[0])
+        private fun key(r: Any): String = when (r) {
+            is Lists.Source -> r.id
+            else -> r.toString()
+        }
+
+        private fun visible(s: Lists.Source) = query.isEmpty() || norms[s.id]!!.contains(query)
+
+        private fun build() {
+            val out = ArrayList<Any>()
+            if (query.isEmpty()) {
+                val on = chosen.filter { it != Lists.CUSTOM }.mapNotNull { byId[it] }
+                if (on.isNotEmpty()) {
+                    out += "Attivi  ·  ${on.size}"
+                    on.forEach { out += ACTIVE_PREFIX + it.id }
                 }
-                Lists.setSelected(this, chosen)
-                dialog.setTitle("$section (${items.count { it.id in chosen }}/${items.size})")
             }
-            .setOnDismissListener { sectionsDialog(cat, chosen, before) }
-            .create()
-        dialog.show()
+            for (s in Lists.SECTIONS) {
+                val mine = cat[s].orEmpty().filter { visible(it) }
+                if (mine.isEmpty()) continue
+                out += "$s  ·  ${cat[s].orEmpty().count { it.id in chosen }}/${cat[s].orEmpty().size} attivi"
+                if (mine.size > 1) out += ALL_PREFIX + s
+                out.addAll(mine)
+            }
+            if (query.isEmpty() || Search.norm("url personalizzato m3u").contains(query)) {
+                out += "Altro"
+                out += CUSTOM_ROW
+            }
+            rows = out
+            adapter.notifyDataSetChanged()
+            title.text = "Elenchi canali  ·  ${chosen.size} attivi" + if (query.isNotEmpty()) "  ·  ricerca “${field.text}”" else ""
+        }
+
+        /** After a rebuild the same row stays selected (or the same list in its section, or the first row). */
+        private fun select(k: String?) {
+            var i = rows.indexOfFirst { key(it) == k }
+            if (i < 0 && k != null) i = rows.indexOfFirst { key(it) == k.removePrefix(ACTIVE_PREFIX) }
+            if (i < 0) i = rows.indexOfFirst { it !is String }
+            if (i < 0) return
+            val top = list.selectedView?.top ?: dp(60)
+            list.setSelectionFromTop(i, top)
+            selKey = key(rows[i])
+        }
+
+        private fun toggle(r: Any) {
+            when {
+                r is Lists.Source -> if (!chosen.remove(r.id)) chosen += r.id
+                r is String && r.startsWith(ACTIVE_PREFIX) -> {
+                    // switched off from the "Attivi" block: stay there, on the next active list
+                    val at = rows.indexOf(r)
+                    chosen -= r.removePrefix(ACTIVE_PREFIX)
+                    Lists.setSelected(this@MainActivity, chosen)
+                    build()
+                    val next = (at until rows.size).firstOrNull { rows[it].let { x -> x is String && x.startsWith(ACTIVE_PREFIX) } }
+                    select(next?.let { key(rows[it]) } ?: selKey)
+                    return
+                }
+                r is String && r.startsWith(ALL_PREFIX) -> {
+                    val mine = cat[r.removePrefix(ALL_PREFIX)].orEmpty().filter { visible(it) }
+                    if (mine.all { it.id in chosen }) mine.forEach { chosen -= it.id } else mine.forEach { chosen += it.id }
+                }
+                r == CUSTOM_ROW -> {
+                    askCustomUrl { on -> if (on) chosen += Lists.CUSTOM else chosen -= Lists.CUSTOM; Lists.setSelected(this@MainActivity, chosen); build(); select(selKey) }
+                    return
+                }
+                else -> return
+            }
+            Lists.setSelected(this@MainActivity, chosen)
+            build()
+            select(selKey)
+        }
+
+        private fun isOn(r: Any): Boolean = when {
+            r is Lists.Source -> r.id in chosen
+            r is String && r.startsWith(ACTIVE_PREFIX) -> true
+            r is String && r.startsWith(ALL_PREFIX) -> cat[r.removePrefix(ALL_PREFIX)].orEmpty().filter { visible(it) }.all { it.id in chosen }
+            r == CUSTOM_ROW -> Lists.CUSTOM in chosen
+            else -> false
+        }
+
+        private fun label(r: Any): String = when {
+            r is Lists.Source -> r.title
+            r is String && r.startsWith(ACTIVE_PREFIX) -> byId[r.removePrefix(ACTIVE_PREFIX)]?.let { Lists.label(it) } ?: r
+            r is String && r.startsWith(ALL_PREFIX) -> "Tutti" + if (query.isNotEmpty()) " (quelli trovati)" else ""
+            r == CUSTOM_ROW -> "URL personalizzato di una lista M3U…"
+            else -> r.toString()
+        }
+
+        private fun focusList() {
+            val i = rows.indexOfFirst { key(it) == selKey }.takeIf { it >= 0 } ?: rows.indexOfFirst { it !is String }
+            list.requestFocus()
+            if (i >= 0) ui.post { list.setSelectionFromTop(i, list.selectedView?.top ?: dp(60)) }
+        }
+
+        private fun clearSearch() {
+            val back = anchorKey ?: selKey
+            anchorKey = null
+            field.setText("") // the watcher rebuilds
+            select(back)
+            focusList()
+        }
+
+        private val adapter = object : BaseAdapter() {
+            override fun getCount() = rows.size
+            override fun getItem(p: Int): Any = rows[p]
+            override fun getItemId(p: Int) = p.toLong()
+            override fun getViewTypeCount() = 2
+            override fun getItemViewType(p: Int) = if (isHeader(rows[p])) 1 else 0
+            override fun areAllItemsEnabled() = false
+            override fun isEnabled(p: Int) = rows.getOrNull(p)?.let { !isHeader(it) } ?: false
+            override fun getView(p: Int, convert: View?, parent: ViewGroup?): View {
+                val r = rows[p]
+                if (isHeader(r)) {
+                    val t = (convert as? TextView) ?: text(12f, Color.parseColor("#FFB25C"), bold = true).apply {
+                        setPadding(dp(10), dp(12), dp(10), dp(3))
+                    }
+                    t.text = r.toString()
+                    return t
+                }
+                val row = (convert as? LinearLayout) ?: LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(12), dp(8), dp(12), dp(8))
+                    addView(View(context), LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(14) })
+                    addView(text(17f), LinearLayout.LayoutParams(0, -2, 1f))
+                }
+                val on = isOn(r)
+                row.getChildAt(0).background = GradientDrawable().apply {
+                    cornerRadius = dp(3).toFloat()
+                    setStroke(dp(2), Color.WHITE)
+                    setColor(if (on) Color.parseColor("#FF8A00") else Color.TRANSPARENT)
+                }
+                (row.getChildAt(1) as TextView).apply {
+                    text = label(r)
+                    setTypeface(null, if (r is String && r.startsWith(ALL_PREFIX)) Typeface.BOLD else Typeface.NORMAL)
+                }
+                return row
+            }
+        }
+
+        private fun isHeader(r: Any) = r is String && !r.startsWith(ACTIVE_PREFIX) && !r.startsWith(ALL_PREFIX) && r != CUSTOM_ROW
+
+        fun show() {
+            val box = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(22), dp(18), dp(22), dp(14))
+                background = GradientDrawable().apply { setColor(Color.parseColor("#F20B0F14")); cornerRadius = dp(10).toFloat() }
+            }
+            box.addView(title)
+            field.apply {
+                hint = "Cerca elenco o paese  (☰ dal telecomando)"
+                setHintTextColor(Color.parseColor("#88FFFFFF"))
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                setSingleLine()
+                imeOptions = EditorInfo.IME_ACTION_DONE or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                background = GradientDrawable().apply { setColor(Color.parseColor("#22FFFFFF")); cornerRadius = dp(6).toFloat() }
+                setPadding(dp(12), dp(7), dp(12), dp(7))
+                setOnFocusChangeListener { v, f ->
+                    (v.background as GradientDrawable).setStroke(if (f) dp(3) else 0, Color.parseColor("#FF8A00"))
+                }
+                setOnClickListener {
+                    (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(this, 0)
+                }
+                addTextChangedListener(object : TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                    override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                    override fun afterTextChanged(s: Editable?) {
+                        val q = Search.norm(s?.toString().orEmpty())
+                        if (q == query) return
+                        if (query.isEmpty() && anchorKey == null) anchorKey = selKey
+                        query = q
+                        build()
+                        select(selKey)
+                    }
+                })
+                setOnEditorActionListener { _, _, _ ->
+                    (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(windowToken, 0)
+                    focusList(); true
+                }
+                onBack = {
+                    (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(windowToken, 0)
+                    if (rows.none { !isHeader(it) }) clearSearch() else focusList()
+                }
+            }
+            box.addView(field, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+            box.addView(text(12f, Color.parseColor("#9AD4FF")).apply {
+                text = "OK: attiva/disattiva (salvato subito)  ·  ☰ cerca  ·  Indietro: annulla la ricerca, poi chiude"
+            }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+            list.adapter = adapter
+            list.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    if (list.hasFocus()) rows.getOrNull(pos)?.let { selKey = key(it) }
+                }
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+            list.setOnItemClickListener { _, _, pos, _ ->
+                rows.getOrNull(pos)?.let { selKey = key(it); toggle(it) }
+            }
+            box.addView(list, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(8) })
+            dialog.setContentView(box)
+            dialog.setOnKeyListener { _, code, e ->
+                when {
+                    code == KeyEvent.KEYCODE_MENU -> {
+                        if (e.action == KeyEvent.ACTION_UP) {
+                            field.requestFocus()
+                            ui.postDelayed({
+                                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
+                            }, 150)
+                        }
+                        true
+                    }
+                    code == KeyEvent.KEYCODE_BACK -> {
+                        if (e.action == KeyEvent.ACTION_UP) {
+                            if (field.text.isNotEmpty()) clearSearch() else dialog.dismiss()
+                        }
+                        true
+                    }
+                    code == KeyEvent.KEYCODE_DPAD_DOWN && field.hasFocus() && e.action == KeyEvent.ACTION_DOWN -> {
+                        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(field.windowToken, 0)
+                        focusList(); true
+                    }
+                    else -> false
+                }
+            }
+            dialog.setOnDismissListener { if (chosen != before) reloadSources() }
+            build()
+            // start on the first active list (or the first row)
+            select(rows.firstOrNull { it is String && it.startsWith(ACTIVE_PREFIX) }?.let { key(it) })
+            dialog.show()
+            dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.62).toInt(), (resources.displayMetrics.heightPixels * 0.92).toInt())
+            dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            list.requestFocus()
+        }
     }
 
     /** Address of an M3U list: saved when the dialog is left (Back or the keyboard's Go); empty = off. */
-    private fun askCustomUrl(cat: Map<String, List<Lists.Source>>, chosen: MutableSet<String>, before: Set<String>) {
+    private fun askCustomUrl(done: (Boolean) -> Unit) {
         lateinit var dialog: AlertDialog
         val field = EditText(this).apply {
             setText(Lists.customUrl(this@MainActivity))
@@ -932,11 +1188,8 @@ class MainActivity : Activity() {
         dialog = AlertDialog.Builder(this).setTitle("Indirizzo di una lista M3U").setView(field)
             .setOnDismissListener {
                 val u = field.text.toString().trim()
-                if (u.startsWith("http")) {
-                    Lists.setCustomUrl(this, u); chosen += Lists.CUSTOM
-                } else chosen -= Lists.CUSTOM
-                Lists.setSelected(this, chosen)
-                sectionsDialog(cat, chosen, before)
+                if (u.startsWith("http")) Lists.setCustomUrl(this, u)
+                done(u.startsWith("http"))
             }
             .create()
         dialog.show()
@@ -949,7 +1202,7 @@ class MainActivity : Activity() {
 
     private fun resetStats() {
         AlertDialog.Builder(this).setTitle("Azzerare i canali più guardati?")
-            .setPositiveButton("Azzera") { _, _ -> stats.clear(); rebuild(sel?.copy(top = false)); status("Statistiche azzerate") }
+            .setPositiveButton("Azzera") { _, _ -> stats.clear(); rebuild(sel?.copy(block = 0)); status("Statistiche azzerate") }
             .setNegativeButton("Annulla", null).show()
     }
 
@@ -1136,8 +1389,8 @@ class MainActivity : Activity() {
             settings.addView(b, item())
         }
         settings.addView(text(12f, Color.parseColor("#888888")).apply {
-            isSingleLine = false; maxLines = 6
-            text = "▶ o Indietro: torna all'elenco\n\nNell'elenco:\n☰ cerca · ◀ impostazioni\n⏪ ⏩ cartella prec./succ.\nIndietro: annulla la ricerca"
+            isSingleLine = false; maxLines = 9
+            text = "▶ o Indietro: torna all'elenco\n\nNell'elenco:\nOK tenuto: ♥ preferito sì/no\n☰ cerca · ◀ impostazioni\n⏪ ⏩ cartella prec./succ.\nIndietro: annulla la ricerca"
         }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
         panel.addView(settings, FrameLayout.LayoutParams(dp(210), -1, Gravity.START).apply {
             setMargins(dp(16), dp(16), 0, dp(16))
@@ -1210,6 +1463,11 @@ class MainActivity : Activity() {
             // API 28: a focus requested before the panel's first layout is handed to the default view on layout;
             // without this it is the search field, and focusing it pops up the Fire TV keyboard
             if (android.os.Build.VERSION.SDK_INT >= 26) isFocusedByDefault = true
+            // long OK on a row: favourite on / off (the place in the list stays)
+            setOnItemLongClickListener { _, _, pos, _ ->
+                (items.getOrNull(pos) as? Row)?.let { toggleFavorite(it.ch) }
+                true
+            }
             setOnItemClickListener { _, v, pos, _ ->
                 val r = items.getOrNull(pos) as? Row ?: return@setOnItemClickListener
                 chanPos = pos; chanTop = v?.top ?: 0; sel = posOf(r)
@@ -1281,7 +1539,7 @@ class MainActivity : Activity() {
             val t2 = col.getChildAt(1) as TextView
             val pb = col.getChildAt(2) as ProgressBar
             logos.load(r.ch, row.getChildAt(0) as ImageView, dp(39))
-            meta.text = if (r.top) "${Stats.format(stats.of(r.ch))}  ·  ${folderOf(r.ch)}" else metaOf(r)
+            meta.text = if (r.block == TOP_BLOCK) "${Stats.format(stats.of(r.ch))}  ·  ${folderOf(r.ch)}" else metaOf(r)
             val now = System.currentTimeMillis()
             if (r.guide && r.prog != null) {
                 val pr = r.prog
@@ -1292,7 +1550,7 @@ class MainActivity : Activity() {
                 pb.visibility = if (pr.isOn(now)) View.VISIBLE else View.GONE
                 pb.progress = pr.progress(now)
             } else {
-                t1.text = "${r.ch.number}   ${r.ch.name}"
+                t1.text = (if (favs.has(r.ch)) "♥ " else "") + "${r.ch.number}   ${r.ch.name}"
                 val pr = epg.now(r.ch, now)
                 if (pr != null) {
                     t2.text = "${pr.title}  ·  ${Epg.hhmm(pr.start)}–${Epg.hhmm(pr.stop)}"
@@ -1313,6 +1571,12 @@ class MainActivity : Activity() {
         const val ON_AIR = "In onda ora"
         const val NEXT = "Tra poco"
         const val RESULTS = "Risultati"
+        const val FAVS = "♥ Preferiti"
+        const val FAV_BLOCK = 2
+        const val TOP_BLOCK = 1
+        const val ACTIVE_PREFIX = "\u0001"
+        const val ALL_PREFIX = "\u0002"
+        const val CUSTOM_ROW = "\u0003custom"
     }
 }
 

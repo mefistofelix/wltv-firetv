@@ -1,6 +1,6 @@
-# WLTV per Fire TV
+# Fire TV Live
 
-App Android TV / Fire TV per guardare i canali in diretta delle liste **World Live TV**, senza Kodi.
+App Android TV / Fire TV (nome sulle TV: **Fire TV Live**) per guardare i canali in diretta delle liste **World Live TV**, senza Kodi.
 Usa le stesse sorgenti dell'addon Kodi *World Live TV* (`plugin.video.wltvhelper`,
 repository <https://github.com/WorldLiveTV/WorldLiveTV.github.io>): le liste M3U pubblicate su
 `tvchannels.worldtvlive.eu` e, per i canali che nella lista sono link `plugin://plugin.video.wltvhelper/play/…`,
@@ -13,6 +13,7 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
 |---|---|---|
 | ▲ ▼, CH+ CH− | canale precedente / successivo (e riquadro col programma) | si muove nell'elenco |
 | OK, ◀ | apre il pannello **canali** | OK guarda il canale |
+| OK tenuto premuto | ♥ preferito sì / no per il canale in onda | ♥ preferito sì / no per il canale selezionato |
 | ▶, ⏩ | apre la **Guida TV** (programmi in onda) | nell'elenco ⏪ ⏩ = cartella precedente / successiva |
 | ≡ Menu | **ricerca**: pannello aperto e tastiera nel campo Cerca | idem, l'elenco resta dov'era |
 | ≡ Menu tenuto premuto | **riscarica gli elenchi** | idem |
@@ -33,12 +34,13 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
   selezionato, e Indietro (o cancellare il testo) rimette tutto l'elenco **sul punto dove eri**, oppure sul risultato
   su cui ti sei spostato o che hai guardato. La ricerca resta attiva chiudendo e riaprendo il pannello finché non la
   annulli.
-- **Elenchi**: si possono attivare **più elenchi insieme** (caselle di spunta, salvate subito: nessun pulsante di
-  conferma, Indietro torna su e all'uscita i canali si ricaricano; in cima a ogni sezione *Seleziona tutti /
-  deseleziona tutti*), divisi in quattro sezioni come
-  nell'addon: *Liste WLTV* (DTT, Vari, Regionali, Radio, Pluto TV, Samsung TV, Rakuten, WeDoTv…), *TV dal mondo*
-  (un elenco per paese, liste iptv-org), *Webcam* (SkylineWebcams per paese) e *Radio dal mondo* (per paese), più un
-  **URL personalizzato** di una lista M3U. Il predefinito è *DTT*. I canali di tutti gli elenchi attivi finiscono
+- **Elenchi**: una sola schermata con **tutti gli elenchi**: in cima gli *Attivi*, poi le sezioni come nell'addon:
+  *Liste WLTV* (DTT, Vari, Regionali, Radio, Pluto TV, Samsung TV, Rakuten, WeDoTv…), *TV dal mondo* (un elenco per
+  paese, liste iptv-org), *Webcam* (SkylineWebcams per paese) e *Radio dal mondo* (per paese), ognuna con la riga
+  *Tutti*, e in fondo l'**URL personalizzato** di una lista M3U. OK attiva o disattiva e **salva subito** (nessun
+  pulsante di conferma). ≡ apre la **ricerca** (anche a voce: «Francia», «webcam Italia»), *Tutti* vale per quelli
+  trovati; Indietro annulla la ricerca e torna sulla riga dove eri, Indietro ancora chiude e i canali si
+  ricaricano. Si possono attivare **più elenchi insieme**. Il predefinito è *DTT*. I canali di tutti gli elenchi attivi finiscono
   in un'unica lista, divisa in cartelle per elenco e per gruppo, ognuna con il **numero di canali**.
   Gli elenchi restano in memoria e funzionano anche senza rete; si riscaricano tenendo premuto ≡ e da soli dopo un giorno.
 - **Guida programmi**: la guida EPG di WLTV (`epg-guide.com/wltv.xz`, la stessa dell'addon) viene scaricata e letta
@@ -48,6 +50,10 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
 - **Guida TV**: vista per **programmi** invece che per canali: *In onda ora* (in ordine di titolo), *Tra poco*
   (le prossime 4 ore, in ordine di orario); per ognuno il canale, la categoria, l'orario e
   quanto manca. OK guarda il canale che lo trasmette.
+- **Preferiti**: **OK tenuto premuto** su un canale dell'elenco (o col video a schermo intero, sul canale che stai
+  guardando) lo mette o lo toglie dai preferiti; sui canali preferiti compare ♥. Il blocco *♥ Preferiti* sta in cima
+  all'elenco. I preferiti sono salvati per intero, quindi **restano anche se spegni l'elenco** da cui vengono e
+  partecipano alla ricerca.
 - **Più guardati**: l'app conta il tempo di visione di ogni canale; il blocco *★ Più guardati* in cima mostra i
   canali visti per almeno un minuto, in ordine di tempo, con il totale. *Azzera più guardati* li cancella.
 - **Ricerca vocale**: premi ≡ (o *Cerca*), poi il tasto microfono della tastiera Fire TV e di' il nome

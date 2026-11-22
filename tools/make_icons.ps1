@@ -59,10 +59,11 @@ foreach ($d in $sizes.Keys) {
 $bmp, $g = New-Canvas 320 180
 $g.FillRectangle((New-Background 320 180), 0, 0, 320, 180)
 Draw-Art $g 1.3 14 28
-$font = New-Object System.Drawing.Font("Segoe UI", 44, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-$g.DrawString("WLTV", $font, [System.Drawing.Brushes]::White, 142, 52)
+$font = New-Object System.Drawing.Font("Segoe UI", 38, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
+$g.DrawString("Fire TV", $font, [System.Drawing.Brushes]::White, 140, 30)
+$g.DrawString("Live", $font, (New-Object System.Drawing.SolidBrush (New-Color "#FF8A00")), 140, 72)
 $small = New-Object System.Drawing.Font("Segoe UI", 16, [System.Drawing.FontStyle]::Regular, [System.Drawing.GraphicsUnit]::Pixel)
-$g.DrawString("TV in diretta", $small, (New-Object System.Drawing.SolidBrush (New-Color "#9AD4FF")), 147, 108)
+$g.DrawString("TV in diretta", $small, (New-Object System.Drawing.SolidBrush (New-Color "#9AD4FF")), 145, 124)
 $dir = Join-Path $res "drawable-xhdpi"; New-Item -ItemType Directory -Force $dir | Out-Null
 $bmp.Save((Join-Path $dir "banner.png"), [System.Drawing.Imaging.ImageFormat]::Png)
 $g.Dispose(); $bmp.Dispose()
