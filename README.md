@@ -11,37 +11,46 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
 
 | Tasto | Video a schermo intero | Pannello aperto |
 |---|---|---|
-| ▲ ▼, CH+ CH− | canale precedente / successivo (e riquadro col programma) | si muove nella lista |
+| ▲ ▼, CH+ CH− | canale precedente / successivo (e riquadro col programma) | si muove nell'elenco |
 | OK, ◀ | apre il pannello **canali** | OK guarda il canale |
-| ▶, ⏩ | apre la **Guida TV** (programmi in onda) | ⏩ passa tra canali e guida |
-| ≡ Menu | apre il pannello e **riscarica gli elenchi** | **riscarica gli elenchi** |
-| ≡ Menu tenuto premuto, ⏪ | ricerca: tastiera aperta nel campo Cerca | idem |
-| ◀ ▶ | | tra colonne: azioni ◀ gruppi ◀ canali; si torna sempre al punto lasciato |
+| ▶, ⏩ | apre la **Guida TV** (programmi in onda) | nell'elenco ⏪ ⏩ = cartella precedente / successiva |
+| ≡ Menu | **ricerca**: pannello aperto e tastiera nel campo Cerca | idem, l'elenco resta dov'era |
+| ≡ Menu tenuto premuto | **riscarica gli elenchi** | idem |
+| ◀ / ▶ | | dall'elenco ◀ va alle **impostazioni** (colonna a sinistra), ▶ torna sul canale lasciato |
+| ▲ sul primo canale | | campo di ricerca; ▼ torna nell'elenco |
 | 0–9 | numero del canale (LCN) | idem |
-| Indietro | chiude il riquadro; due volte per uscire | chiude il pannello |
+| Indietro | chiude il riquadro; due volte per uscire | tastiera aperta: la chiude e torna nell'elenco (ricerca tenuta); con una ricerca attiva: la **annulla** e torna dov'eri; altrimenti chiude il pannello |
 | ⏯ | ricarica il canale | |
 
-- **Azioni**: Cerca, Guida TV, Elenchi, Aggiorna e Azzera visti sono in una colonna a sinistra del pannello: con ◀
-  dalla lista dei gruppi ci si arriva da qualunque punto, senza risalire le liste, e con ▶ (o Indietro dalla ricerca)
-  si ritorna sul canale e sul gruppo di prima.
+- **Pannello**: a sinistra dello schermo la colonna **impostazioni** (Cerca, Cartelle, Guida TV, Elenchi, Aggiorna,
+  Azzera visti), a destra l'**elenco** dei canali con il campo di ricerca in cima; in mezzo resta visibile il video.
+  L'elenco è **unico**: in cima *★ Più guardati*, poi tutti i canali con dei piccoli **divisori di cartella**
+  («elenco › gruppo» e numero di canali); ogni canale riporta anche la sua cartella a destra del nome, così si sa
+  dove si è anche a metà cartella. I più guardati compaiono di nuovo più sotto, al loro posto. *Cartelle* apre
+  l'indice delle cartelle per saltare direttamente a una.
+- **Ricerca**: cerca nel nome, nel numero, nel **programma in onda** e nella **cartella** (elenco, gruppo, categoria).
+  Si apre con ≡ da qualunque punto senza perdere la posizione: se il canale su cui eri è tra i risultati resta
+  selezionato, e Indietro (o cancellare il testo) rimette tutto l'elenco **sul punto dove eri**, oppure sul risultato
+  su cui ti sei spostato o che hai guardato. La ricerca resta attiva chiudendo e riaprendo il pannello finché non la
+  annulli.
 - **Elenchi**: si possono attivare **più elenchi insieme** (caselle di spunta, salvate subito: nessun pulsante di
   conferma, Indietro torna su e all'uscita i canali si ricaricano; in cima a ogni sezione *Seleziona tutti /
   deseleziona tutti*), divisi in quattro sezioni come
   nell'addon: *Liste WLTV* (DTT, Vari, Regionali, Radio, Pluto TV, Samsung TV, Rakuten, WeDoTv…), *TV dal mondo*
   (un elenco per paese, liste iptv-org), *Webcam* (SkylineWebcams per paese) e *Radio dal mondo* (per paese), più un
   **URL personalizzato** di una lista M3U. Il predefinito è *DTT*. I canali di tutti gli elenchi attivi finiscono
-  in un'unica lista; a sinistra ci sono i gruppi per elenco e per categoria, ognuno con il **numero di canali**.
-  Gli elenchi restano in memoria e funzionano anche senza rete; si riscaricano con ≡ e da soli dopo un giorno.
+  in un'unica lista, divisa in cartelle per elenco e per gruppo, ognuna con il **numero di canali**.
+  Gli elenchi restano in memoria e funzionano anche senza rete; si riscaricano tenendo premuto ≡ e da soli dopo un giorno.
 - **Guida programmi**: la guida EPG di WLTV (`epg-guide.com/wltv.xz`, la stessa dell'addon) viene scaricata e letta
   sulla TV. Sotto ogni canale c'è il **programma in onda** con orario e barra di avanzamento. Cambiando canale
   compare per qualche secondo un riquadro con logo, programma, ora di inizio e di fine, **barra di avanzamento**,
   minuti mancanti e programma successivo.
 - **Guida TV**: vista per **programmi** invece che per canali: *In onda ora* (in ordine di titolo), *Tra poco*
-  (le prossime 4 ore, in ordine di orario) e le categorie dei programmi in onda; per ognuno il canale, l'orario e
+  (le prossime 4 ore, in ordine di orario); per ognuno il canale, la categoria, l'orario e
   quanto manca. OK guarda il canale che lo trasmette.
-- **Più guardati**: l'app conta il tempo di visione di ogni canale; il gruppo *★ Più guardati* in cima mostra i
+- **Più guardati**: l'app conta il tempo di visione di ogni canale; il blocco *★ Più guardati* in cima mostra i
   canali visti per almeno un minuto, in ordine di tempo, con il totale. *Azzera più guardati* li cancella.
-- **Ricerca vocale**: premi *Cerca* (o tieni premuto ≡), poi il tasto microfono della tastiera Fire TV e di' il nome
+- **Ricerca vocale**: premi ≡ (o *Cerca*), poi il tasto microfono della tastiera Fire TV e di' il nome
   del canale («Rai tre», «canale cinque», «la sette», «venti») oppure di un **programma in onda** («Un posto al
   sole»): trova il canale che lo sta trasmettendo. I risultati compaiono mentre parli; «Vai» sulla
   tastiera avvia il primo. Il tasto microfono del telecomando *fuori* dalla tastiera apre sempre Alexa: Fire OS non lo

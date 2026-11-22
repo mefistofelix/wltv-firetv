@@ -52,11 +52,16 @@ import androidx.media3.ui.PlayerView
 import java.util.concurrent.Executors
 
 /**
- * Single activity: fullscreen player, info banner, and the panel (groups | rows, search field, buttons).
- * The panel has two modes: channels (rows = channels with the programme on air under the name) and the TV guide
- * (rows = programmes on air or coming next, whatever the channel; OK plays the channel showing it).
- * Remote, video in front: ▲▼ / CH± zap, OK or ◀ = channels, ▶ or ⏩ = guide, Menu = channels + re-download,
- * long Menu = search (voice: mic of the Fire TV keyboard), digits = channel number, ⏯ = reload.
+ * Single activity: fullscreen player, info banner, and the panel: a settings column on the left of the screen and,
+ * on the right, the search field over ONE list. The list holds the most watched channels on top, then every channel
+ * under small folder dividers ("source › group"); each row also names its folder. Two modes: channels, and the TV
+ * guide (rows = programmes on air or coming next; OK plays the channel showing it).
+ * The search narrows the list without losing the place: the row the user was on stays selected when it is still in
+ * the results, and Back (or clearing the text) puts the full list back on that row, or on the result the user moved to.
+ * Remote, video in front: ▲▼ / CH± zap, OK or ◀ = channels, ▶ or ⏩ = guide, Menu = search (voice: mic of the Fire TV
+ * keyboard), long Menu = re-download, digits = channel number, ⏯ = reload.
+ * In the list: ◀ = settings, ▲ from the first row = search field, Menu = search, Back = reset the search, then close,
+ * ⏪ ⏩ = previous / next folder.
  */
 @OptIn(UnstableApi::class)
 class MainActivity : Activity() {
@@ -79,28 +84,33 @@ class MainActivity : Activity() {
     private lateinit var bannerTime: TextView
     private lateinit var bannerBar: ProgressBar
     private lateinit var bannerNext: TextView
-    private lateinit var panel: LinearLayout
+    private lateinit var panel: FrameLayout
     private lateinit var header: TextView
+    private lateinit var listTitle: TextView
     private lateinit var status: TextView
     private lateinit var search: SearchField
-    private lateinit var groupList: ListView
     private lateinit var channelList: ListView
     private lateinit var listButton: Button
     private lateinit var modeButton: Button
-    private lateinit var rail: LinearLayout
-    /** Row of the channel column the user was on, and its height on screen. */
+    private lateinit var settings: LinearLayout
+    /** Settings button focused last: ◀ from the list goes back to it. */
+    private var lastSetting: View? = null
+    /** Index in [items] of the row the user is on, and its height on screen. */
     private var chanPos = 0
     private var chanTop = 0
 
-    /** A row of the right column: a channel, or (guide mode) a programme of that channel. */
-    private class Row(val ch: Channel, val prog: Prog?, val guide: Boolean = false)
-    private class Group(val label: String, val rows: List<Row>, val indent: Boolean = false)
+    /** A channel row, or (guide mode) a programme of that channel; [top] = copy in the "most watched" block. */
+    private class Row(val ch: Channel, val prog: Prog?, val guide: Boolean = false, val top: Boolean = false)
+    /** A small divider of the list: a folder (source › group), the most watched block, the results. */
+    private class Header(val label: String, val count: Int)
+    /** Where the user is in the list, kept across rebuilds (search, refresh, guide updates). */
+    private data class Pos(val ch: String, val top: Boolean = false, val start: Long? = null)
 
     private var channels: List<Channel> = emptyList()
     private var sourceTitles: List<String> = emptyList()
     private var guideMode = false
-    private var groups: List<Group> = emptyList()
-    private var shown: List<Row> = emptyList()
+    /** The list: [Header] and [Row] items. */
+    private var items: List<Any> = emptyList()
     private var current: Channel? = null
     private var playGen = 0
     private var retriedWithoutMime = false
@@ -108,16 +118,21 @@ class MainActivity : Activity() {
     private var digits = ""
     private var menuLongHandled = false
     private var backAt = 0L
-    private var groupPos = 0
     private var guideRows: List<Row> = emptyList()
-    /** Active search: score by row key ([rowKey]); null = no search. */
+    /** The row the user is on; [anchor] = the row they were on when the search started. */
+    private var sel: Pos? = null
+    private var anchor: Pos? = null
+    private var anchorTop = 0
+    /** The result selected when the results came; another one selected = the user moved through the results. */
+    private var resultStart: Pos? = null
+    private var movedInResults = false
+    /** Active search: score by row key ([hitKey]); null = no search. */
     private var hits: Map<String, Int>? = null
     private var searchGen = 0
     private val searchExec = Executors.newSingleThreadExecutor()
     /** Normalized names and titles, filled by the search thread only. */
     private val normNames = HashMap<String, String>()
 
-    private val groupAdapter = GroupAdapter()
     private val rowAdapter = RowAdapter()
 
     // ------------------------------------------------------------------ lifecycle
@@ -283,7 +298,7 @@ class MainActivity : Activity() {
             if (!epg.update(force)) return@execute
             ui.post {
                 logos.setMaps(epg.iconById, epg.iconByName)
-                if (panel.visibility == View.VISIBLE) refreshGroups()
+                if (panel.visibility == View.VISIBLE) rebuild()
                 if (bannerBox.visibility == View.VISIBLE) info(current, restart = false)
             }
         }
@@ -341,84 +356,125 @@ class MainActivity : Activity() {
             1 -> titles[0]
             else -> "${titles[0]} + ${titles.size - 1}"
         }
-        header.text = "WLTV ${updater.installedCode}  ·  $name"
+        header.text = "WLTV ${updater.installedCode}"
+        listName = name
+        updateTitle()
         listButton.text = "Elenchi (${titles.size})"
         current = current?.let { c -> channels.firstOrNull { it.key == c.key } ?: c }
-        refreshGroups()
+        rebuild()
     }
 
-    private fun channelRows(list: List<Channel>) = list.map { Row(it, null) }
+    private var listName = ""
+    private fun updateTitle() {
+        listTitle.text = (if (guideMode) "Guida TV" else "Canali") + if (listName.isNotEmpty()) "  ·  $listName" else ""
+    }
 
-    /** Left column. Channels: most watched, all, then per source and category. Guide: on air, next, categories. */
-    private fun refreshGroups() {
-        val keep = groups.getOrNull(groupPos)?.label?.substringBefore("  ")
-        val g = ArrayList<Group>()
+    /** Folder of a channel as shown on its divider and its row: "source › group" when several lists are on. */
+    private fun folderOf(ch: Channel): String {
+        val g = ch.group.ifBlank { "Altri" }
+        return if (sourceTitles.size > 1 && ch.source.isNotEmpty()) "${ch.source} › $g" else g
+    }
+
+    /** What a row shows as its place: the folder, and for programmes their category. */
+    private fun metaOf(r: Row): String {
+        val cat = r.prog?.category?.takeIf { it.isNotBlank() }?.replaceFirstChar { it.uppercase() }
+        return if (cat != null) "$cat  ·  ${folderOf(r.ch)}" else folderOf(r.ch)
+    }
+
+    private fun hitKey(r: Row) = if (r.guide) "${r.ch.key}\u0000${r.prog?.start}" else r.ch.key
+    private fun posOf(r: Row) = Pos(r.ch.key, r.top, r.prog?.start)
+
+    /**
+     * The list. Channels: most watched (copies), then every channel under its folder divider, in list order.
+     * Guide: programmes on air (by title), then the ones starting within 4 hours (by time).
+     * A search replaces it with the matches, best first, under one divider.
+     */
+    private fun buildItems(): List<Any> {
+        val out = ArrayList<Any>()
+        val h = hits
         if (!guideMode) {
+            if (h != null) {
+                val rows = channels.filter { it.key in h }.sortedByDescending { h[it.key] }
+                out += Header(if (rows.isEmpty()) "Nessun risultato" else RESULTS, rows.size)
+                rows.forEach { out += Row(it, null) }
+                return out
+            }
             val top = stats.top(channels)
-            if (top.isNotEmpty()) g += Group(TOP, channelRows(top))
-            g += Group(ALL, channelRows(channels))
-            val multi = sourceTitles.size > 1
-            for (src in sourceTitles) {
-                val mine = if (multi) channels.filter { it.source == src } else channels
-                val cats = mine.groupBy { it.group }
-                if (multi) g += Group("▸ $src", channelRows(mine))
-                if (!multi || cats.size > 1) for ((cat, list) in cats) g += Group(cat, channelRows(list), indent = multi)
+            if (top.isNotEmpty()) {
+                out += Header(TOP, top.size)
+                top.forEach { out += Row(it, null, top = true) }
             }
-        } else {
-            val now = System.currentTimeMillis()
-            val onAir = ArrayList<Row>()
-            val next = ArrayList<Row>()
-            for (ch in channels.distinctBy { epg.idOf(it) ?: it.key }) {
-                epg.now(ch, now)?.let { onAir += Row(ch, it, guide = true) }
-                epg.next(ch, now)?.let { if (it.start - now < 4 * 3600_000L) next += Row(ch, it, guide = true) }
+            val byFolder = LinkedHashMap<String, MutableList<Channel>>()
+            for (c in channels) byFolder.getOrPut(folderOf(c)) { ArrayList() } += c
+            for ((f, list) in byFolder) {
+                out += Header(f, list.size)
+                list.forEach { out += Row(it, null) }
             }
-            onAir.sortBy { it.prog!!.title.lowercase() }
-            next.sortBy { it.prog!!.start }
-            guideRows = onAir + next
-            g += Group(ON_AIR, onAir)
-            g += Group(NEXT, next)
-            onAir.filter { it.prog!!.category.isNotEmpty() }.groupBy { it.prog!!.category.replaceFirstChar { c -> c.uppercase() } }
-                .toSortedMap().forEach { (cat, rows) -> g += Group(cat, rows) }
-            if (onAir.isEmpty()) status(if (epg.parsedAt == 0L) "Guida TV in caricamento…" else "Nessun programma in guida per questi canali")
+            return out
         }
-        // a search narrows every group to its matches (best first) and hides the groups left empty
-        hits?.let { h ->
-            val rank = { r: Row -> h[rowKey(r)] ?: 0 }
-            val all = (if (guideMode) guideRows else channelRows(channels)).filter { rowKey(it) in h }.sortedByDescending(rank)
-            val narrowed = g.filter { it.label != ALL }.map { Group(it.label, it.rows.filter { r -> rowKey(r) in h }.sortedByDescending(rank), it.indent) }
-                .filter { it.rows.isNotEmpty() }
-            g.clear()
-            g += Group(RESULTS, all)
-            g += narrowed
+        val now = System.currentTimeMillis()
+        val onAir = ArrayList<Row>()
+        val next = ArrayList<Row>()
+        for (ch in channels.distinctBy { epg.idOf(it) ?: it.key }) {
+            epg.now(ch, now)?.let { onAir += Row(ch, it, guide = true) }
+            epg.next(ch, now)?.let { if (it.start - now < 4 * 3600_000L) next += Row(ch, it, guide = true) }
         }
-        groups = g
-        groupAdapter.notifyDataSetChanged()
-        val pos = g.indexOfFirst { it.label == keep }.takeIf { it >= 0 } ?: 0
-        // setSelection would scroll the row to the top and hide the groups above it (★ Più guardati)
-        val row = groupList.getChildAt(0)?.height?.takeIf { it > 0 } ?: dp(44)
-        groupList.setSelectionFromTop(pos, if (pos < 6) pos * row else 0)
-        showGroup(pos)
+        onAir.sortBy { it.prog!!.title.lowercase() }
+        next.sortBy { it.prog!!.start }
+        guideRows = onAir + next
+        if (h != null) {
+            val rows = guideRows.filter { hitKey(it) in h }.sortedByDescending { h[hitKey(it)] }
+            out += Header(if (rows.isEmpty()) "Nessun risultato" else RESULTS, rows.size)
+            out.addAll(rows)
+            return out
+        }
+        if (onAir.isEmpty()) status(if (epg.parsedAt == 0L) "Guida TV in caricamento…" else "Nessun programma in guida per questi canali")
+        if (onAir.isNotEmpty()) { out += Header(ON_AIR, onAir.size); out.addAll(onAir) }
+        if (next.isNotEmpty()) { out += Header(NEXT, next.size); out.addAll(next) }
+        return out
     }
 
-    private fun showGroup(pos: Int) {
-        groupPos = pos
-        shown = groups.getOrNull(pos)?.rows ?: emptyList()
+    /** Index of [p] in the list: the same row, else the same channel in the same block, else the channel anywhere. */
+    private fun indexOf(p: Pos?): Int {
+        if (p == null) return -1
+        var sameBlock = -1
+        var any = -1
+        for ((i, it) in items.withIndex()) {
+            val r = it as? Row ?: continue
+            if (r.ch.key != p.ch) continue
+            if (r.top == p.top && r.prog?.start == p.start) return i
+            if (sameBlock < 0 && r.top == p.top) sameBlock = i
+            if (any < 0) any = i
+        }
+        return if (sameBlock >= 0) sameBlock else any
+    }
+
+    private fun firstRow(from: Int = 0) = (from until items.size).firstOrNull { items[it] is Row } ?: -1
+
+    /** Rebuilds the list and selects [target] (default: where the user is) at height [top]. */
+    private fun rebuild(target: Pos? = sel, top: Int = chanTop) {
+        items = buildItems()
         rowAdapter.notifyDataSetChanged()
-        val cur = if (hits != null) -1 else shown.indexOfFirst { it.ch.key == current?.key }
-        chanPos = if (cur >= 0) cur else 0
-        chanTop = 0
-        channelList.setSelection(chanPos)
+        var i = indexOf(target)
+        if (i < 0) i = indexOf(current?.let { Pos(it.key) })
+        if (i < 0) i = firstRow()
+        if (i < 0) return
+        chanPos = i
+        chanTop = top
+        sel = posOf(items[i] as Row)
+        channelList.setSelectionFromTop(i, top)
     }
 
     private fun setMode(guide: Boolean) {
         if (guideMode == guide) return
         guideMode = guide
         modeButton.text = if (guide) "Canali" else "Guida TV"
-        search.setText("")
+        updateTitle()
         hits = null
-        groupPos = 0
-        groups = emptyList()
-        refreshGroups()
+        anchor = null
+        if (search.text.isNotEmpty()) search.setText("")
+        sel = null
+        rebuild(current?.let { Pos(it.key) }, 0)
         if (guide) status(if (epg.parsedAt == 0L) "Guida TV in caricamento…" else "Programmi in onda e prossimi")
         else status("${channels.size} canali")
     }
@@ -510,8 +566,9 @@ class MainActivity : Activity() {
         info(current, "Errore: $why", keepOpen = true)
     }
 
+    /** ▲▼ with the video in front: the channels of the list as it is (results while searching), not the copies on top. */
     private fun zap(step: Int) {
-        val visible = shown.map { it.ch }.distinctBy { it.key }
+        val visible = items.mapNotNull { (it as? Row)?.takeIf { r -> !r.top }?.ch }.distinctBy { it.key }
         val list = if (visible.any { it.key == current?.key }) visible else channels
         if (list.isEmpty()) return
         val i = list.indexOfFirst { it.key == current?.key }
@@ -523,16 +580,15 @@ class MainActivity : Activity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val code = event.keyCode
         if (code == KeyEvent.KEYCODE_MENU) {
+            // short = search (from anywhere, the list keeps its place), long = download the lists again
             if (event.action == KeyEvent.ACTION_DOWN) {
                 if (event.repeatCount == 1) {
                     menuLongHandled = true
-                    openSearch()
-                }
-            } else if (event.action == KeyEvent.ACTION_UP) {
-                if (!menuLongHandled) {
                     showPanel()
                     loadList(refresh = true)
                 }
+            } else if (event.action == KeyEvent.ACTION_UP) {
+                if (!menuLongHandled) openSearch()
                 menuLongHandled = false
             }
             return true
@@ -545,9 +601,7 @@ class MainActivity : Activity() {
         when (code) {
             KeyEvent.KEYCODE_CHANNEL_UP -> { zap(-1); return true }
             KeyEvent.KEYCODE_CHANNEL_DOWN -> { zap(1); return true }
-            KeyEvent.KEYCODE_MEDIA_FAST_FORWARD, KeyEvent.KEYCODE_GUIDE -> {
-                setMode(!(panelOpen && guideMode)); showPanel(); return true
-            }
+            KeyEvent.KEYCODE_GUIDE -> { setMode(!(panelOpen && guideMode)); showPanel(); return true }
         }
         if (!panelOpen) {
             when (code) {
@@ -556,7 +610,8 @@ class MainActivity : Activity() {
                 KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DPAD_LEFT -> {
                     setMode(false); showPanel(); return true
                 }
-                KeyEvent.KEYCODE_DPAD_RIGHT -> { setMode(true); showPanel(); return true }
+                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { setMode(true); showPanel(); return true }
+                KeyEvent.KEYCODE_MEDIA_REWIND -> { openSearch(); return true }
                 KeyEvent.KEYCODE_INFO -> { info(current); return true }
                 KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { current?.let { play(it) }; return true }
                 KeyEvent.KEYCODE_BACK -> {
@@ -570,41 +625,84 @@ class MainActivity : Activity() {
                     return true
                 }
             }
-        } else if (code == KeyEvent.KEYCODE_BACK) {
-            if (current != null) hidePanel() else finish()
-            return true
-        } else if (code == KeyEvent.KEYCODE_DPAD_DOWN && search.hasFocus()) {
-            // the text field keeps ▼ for its cursor: back to the channel where the user was
-            hideKeyboard(); focusChannels(); return true
-        } else if (code == KeyEvent.KEYCODE_DPAD_LEFT && channelList.hasFocus()) {
-            focusGroups(); return true
-        } else if (code == KeyEvent.KEYCODE_DPAD_RIGHT && groupList.hasFocus()) {
-            focusChannels(); return true
-        } else if (code == KeyEvent.KEYCODE_DPAD_RIGHT && rail.hasFocus()) {
-            focusGroups(); return true
+            return super.dispatchKeyEvent(event)
         }
-        if (code == KeyEvent.KEYCODE_MEDIA_REWIND) {
-            openSearch(); return true
+        // panel open (the search field takes its own Back in SearchField.onKeyPreIme)
+        val inList = channelList.hasFocus()
+        val inSettings = settings.hasFocus()
+        when {
+            code == KeyEvent.KEYCODE_BACK -> {
+                when {
+                    inSettings -> focusChannels()
+                    hits != null || search.text.isNotEmpty() -> resetSearch()
+                    current != null -> hidePanel()
+                    else -> finish()
+                }
+                return true
+            }
+            code == KeyEvent.KEYCODE_DPAD_DOWN && search.hasFocus() -> {
+                // the text field keeps ▼ for its cursor: back to the row the user was on
+                hideKeyboard(); focusChannels(); return true
+            }
+            code == KeyEvent.KEYCODE_DPAD_LEFT && inList -> { focusSettings(); return true }
+            code == KeyEvent.KEYCODE_DPAD_RIGHT && inSettings -> { focusChannels(); return true }
+            code == KeyEvent.KEYCODE_DPAD_LEFT && inSettings -> return true
+            code == KeyEvent.KEYCODE_MEDIA_REWIND && inList -> { jumpFolder(-1); return true }
+            code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD && inList -> { jumpFolder(1); return true }
+            code == KeyEvent.KEYCODE_MEDIA_REWIND -> { openSearch(); return true }
+            code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { setMode(!guideMode); focusChannels(); return true }
         }
         return super.dispatchKeyEvent(event)
     }
 
     /*
-     * Moving between the columns: a ListView taking focus picks the row nearest to the view the focus comes from,
-     * which loses the user's place. These put the focus back on the row (and at the height) it was left on.
+     * A ListView taking focus picks the row nearest to the view the focus comes from, which loses the user's place.
+     * This puts the focus back on the row (and at the height) it was left on.
      */
-    private fun focusGroups() {
-        val keep = groupPos
-        val top = groupList.getChildAt(keep - groupList.firstVisiblePosition)?.top ?: 0
-        groupList.requestFocus()
-        ui.post { groupList.setSelectionFromTop(keep, top) }
-    }
-
     private fun focusChannels() {
-        val keep = chanPos.coerceIn(0, (shown.size - 1).coerceAtLeast(0))
+        if (firstRow() < 0) {
+            search.requestFocus(); return
+        }
+        val keep = chanPos.coerceIn(0, items.size - 1)
         val top = channelList.getChildAt(keep - channelList.firstVisiblePosition)?.top ?: chanTop
         channelList.requestFocus()
         ui.post { channelList.setSelectionFromTop(keep, top) }
+    }
+
+    private fun focusSettings() {
+        val v = lastSetting ?: settings.getChildAt(1)
+        v?.requestFocus()
+    }
+
+    /** ⏪ ⏩ in the list: first row of the previous / next folder. */
+    private fun jumpFolder(step: Int) {
+        val cur = chanPos
+        val heads = items.indices.filter { items[it] is Header }
+        if (heads.isEmpty()) return
+        val mine = heads.lastOrNull { it < cur } ?: heads.first()
+        val target = if (step > 0) heads.firstOrNull { it > cur } else heads.lastOrNull { it < mine } ?: mine
+        val row = target?.let { firstRow(it) } ?: return
+        if (row < 0) return
+        channelList.setSelectionFromTop(row, dp(24))
+    }
+
+    /** Settings → "Cartelle": every divider of the list with its size; the one picked is shown in the list. */
+    private fun chooseFolder() {
+        val heads = items.indices.filter { items[it] is Header }
+        if (heads.isEmpty()) return
+        val labels = heads.map { (items[it] as Header).let { h -> "${h.label}  ·  ${h.count}" } as CharSequence }.toTypedArray()
+        val mine = heads.indexOfLast { it < chanPos }.coerceAtLeast(0)
+        AlertDialog.Builder(this).setTitle("Vai alla cartella")
+            .setSingleChoiceItems(labels, mine) { d, which ->
+                d.dismiss()
+                val row = firstRow(heads[which])
+                if (row >= 0) {
+                    chanPos = row; chanTop = dp(24)
+                    sel = posOf(items[row] as Row)
+                    focusChannels()
+                }
+            }
+            .show()
     }
 
     private val digitTimeout = Runnable {
@@ -623,15 +721,20 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ panel
 
+    /** Opens on the row the user left, or on the channel playing if they zapped away from it meanwhile. */
     private fun showPanel() {
         if (panel.visibility != View.VISIBLE) {
             panel.visibility = View.VISIBLE
             bannerBox.visibility = View.GONE
-            refreshGroups()
+            val c = current
+            val target = if (c != null && sel?.ch != c.key) Pos(c.key, top = sel?.top == true) else sel
+            rebuild(target, if (target == sel) chanTop else dp(60))
         }
         // after the layout pass: a list that has just been filled does not keep a focus requested now
-        channelList.requestFocus()
-        panel.post { if (!search.hasFocus() && panel.findFocus() == null) channelList.requestFocus() }
+        if (!search.hasFocus() && !settings.hasFocus()) {
+            channelList.requestFocus()
+            panel.post { if (panel.findFocus() == null) focusChannels() }
+        }
     }
 
     private fun hidePanel() {
@@ -652,8 +755,6 @@ class MainActivity : Activity() {
         (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(search.windowToken, 0)
     }
 
-    private fun rowKey(r: Row) = if (r.guide) "${r.ch.key}|${r.prog?.start}" else r.ch.key
-
     /** Typing: wait for a pause, then search off the main thread (thousands of rows; dictation sends many updates). */
     private fun onSearchText(q: String) {
         ui.removeCallbacks(searchRun)
@@ -664,41 +765,85 @@ class MainActivity : Activity() {
         val text = search.text.toString()
         val gen = ++searchGen
         if (text.isBlank()) {
-            if (hits != null) {
-                hits = null; groupPos = 0; refreshGroups()
-            }
-            status(if (guideMode) "Programmi in onda e prossimi" else "${channels.size} canali")
+            resetSearch()
             return@Runnable
         }
         val guide = guideMode
-        val rows = if (guide) guideRows else channelRows(channels)
+        val rows = if (guide) guideRows else channels.map { Row(it, null) }
+        val folders = rows.map { metaOf(it) }
         searchExec.execute {
             val query = Search.Query(text)
             val now = System.currentTimeMillis()
             val found = HashMap<String, Int>()
-            for (r in rows) {
+            for ((i, r) in rows.withIndex()) {
                 val name = normNames.getOrPut(r.ch.name) { Search.norm(r.ch.name) }
                 val title = (if (guide) r.prog else epg.now(r.ch, now))?.title?.let { t -> normNames.getOrPut(t) { Search.norm(t) } }
-                val s = query.score(name, r.ch.number, title)
-                if (s > 0) found[rowKey(r)] = s
+                val folder = normNames.getOrPut(folders[i]) { Search.norm(folders[i]) }
+                val s = query.score(name, r.ch.number, title, folder)
+                if (s > 0) found[hitKey(r)] = s
             }
             ui.post {
                 if (gen != searchGen || search.text.toString() != text) return@post
-                hits = found
-                groupPos = 0
-                refreshGroups()
-                status(if (found.isEmpty()) "Nessun risultato per “$text”" else "${found.size} risultati per “$text”")
+                showResults(found)
+                if (goPending) playBestResult()
+                status(if (found.isEmpty()) "Nessun risultato per “$text”  ·  Indietro = tutto l'elenco"
+                else "${found.size} risultati per “$text”  ·  Indietro = tutto l'elenco")
             }
         }
     }
 
-    /** IME "Go": play the best match straight away. */
+    /** The row the user was on stays selected when it is among the results, else the best result is. */
+    private fun showResults(found: Map<String, Int>) {
+        if (hits == null) {
+            anchor = sel; anchorTop = chanTop
+        }
+        hits = found
+        val keep = anchor?.let { a -> Pos(a.ch, false, a.start) }
+        val kept = keep != null && (if (guideMode) found.keys.any { it.startsWith(keep.ch + "\u0000") } else keep.ch in found)
+        rebuild(if (kept) keep else null, if (kept) dp(60) else 0)
+        resultStart = sel
+        movedInResults = false
+    }
+
+    /**
+     * Back from the list or an empty field: the whole list again, on the result the user moved to or played, or
+     * else on the row they were on before searching.
+     */
+    private fun resetSearch() {
+        if (hits == null && search.text.isEmpty()) return
+        ui.removeCallbacks(searchRun)
+        searchGen++
+        val target = if (movedInResults) sel?.let { Pos(it.ch, false, it.start) } else anchor
+        val top = if (movedInResults) chanTop else anchorTop
+        hits = null
+        anchor = null
+        movedInResults = false
+        if (search.text.isNotEmpty()) search.setText("")
+        rebuild(target, top)
+        status(if (guideMode) "Programmi in onda e prossimi" else "${channels.size} canali")
+    }
+
+    /** IME "Go": play the best match as soon as the results are there (the search stays, Back clears it). */
+    private var goPending = false
+
     private fun onSearchGo() {
+        hideKeyboard()
+        if (search.text.isBlank()) {
+            focusChannels(); return
+        }
+        goPending = true
         ui.removeCallbacks(searchRun)
         searchRun.run()
-        val best = groups.firstOrNull { it.label == RESULTS }?.rows?.firstOrNull() ?: return
-        hideKeyboard()
-        search.setText("")
+    }
+
+    private fun playBestResult() {
+        goPending = false
+        val i = firstRow()
+        if (i < 0) {
+            focusChannels(); return
+        }
+        val best = items[i] as Row
+        chanPos = i; chanTop = 0; sel = posOf(best); movedInResults = true
         play(best.ch)
         hidePanel()
     }
@@ -798,15 +943,13 @@ class MainActivity : Activity() {
     }
 
     private fun reloadSources() {
-        search.setText("")
-        groupPos = 0
-        groups = emptyList()
-        loadList(refresh = false) { channelList.requestFocus() }
+        resetSearch()
+        loadList(refresh = false) { focusChannels() }
     }
 
     private fun resetStats() {
         AlertDialog.Builder(this).setTitle("Azzerare i canali più guardati?")
-            .setPositiveButton("Azzera") { _, _ -> stats.clear(); refreshGroups(); status("Statistiche azzerate") }
+            .setPositiveButton("Azzera") { _, _ -> stats.clear(); rebuild(sel?.copy(top = false)); status("Statistiche azzerate") }
             .setNegativeButton("Annulla", null).show()
     }
 
@@ -966,15 +1109,49 @@ class MainActivity : Activity() {
         val bw = (resources.displayMetrics.widthPixels * 0.62).toInt()
         root.addView(bannerBox, FrameLayout.LayoutParams(bw, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = dp(32) })
 
-        panel = LinearLayout(this).apply {
+        // panel: settings column at the left edge, the channel list at the right edge, the video between them
+        panel = FrameLayout(this)
+        val box = { GradientDrawable().apply { setColor(Color.parseColor("#E60B0F14")); cornerRadius = dp(10).toFloat() } }
+
+        settings = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#E60B0F14"))
-            setPadding(dp(24), dp(20), dp(24), dp(16))
+            background = box()
+            setPadding(dp(16), dp(20), dp(16), dp(16))
         }
-        header = text(22f, bold = true)
-        panel.addView(header)
+        header = text(20f, bold = true)
+        settings.addView(header, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })
+        modeButton = button("Guida TV") { setMode(!guideMode); focusChannels() }
+        listButton = button("Elenchi") { chooseLists() }
+        val item = { LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) } }
+        for (b in listOf(
+            button("Cerca") { openSearch() },
+            button("Cartelle") { chooseFolder() },
+            modeButton,
+            listButton,
+            button("Aggiorna") { loadList(refresh = true); updateEpg(force = true) },
+            button("Azzera visti") { resetStats() },
+        )) {
+            val own = b.onFocusChangeListener
+            b.setOnFocusChangeListener { v, f -> own?.onFocusChange(v, f); if (f) lastSetting = v }
+            settings.addView(b, item())
+        }
+        settings.addView(text(12f, Color.parseColor("#888888")).apply {
+            isSingleLine = false; maxLines = 6
+            text = "▶ o Indietro: torna all'elenco\n\nNell'elenco:\n☰ cerca · ◀ impostazioni\n⏪ ⏩ cartella prec./succ.\nIndietro: annulla la ricerca"
+        }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        panel.addView(settings, FrameLayout.LayoutParams(dp(210), -1, Gravity.START).apply {
+            setMargins(dp(16), dp(16), 0, dp(16))
+        })
+
+        val chan = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = box()
+            setPadding(dp(20), dp(18), dp(20), dp(12))
+        }
+        listTitle = text(19f, bold = true).apply { text = "Canali" }
+        chan.addView(listTitle)
         search = SearchField(this).apply {
-            hint = "Cerca canale o programma: OK e poi il microfono"
+            hint = "Cerca canale, programma o cartella  (☰ dal telecomando)"
             setHintTextColor(Color.parseColor("#88FFFFFF"))
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
@@ -1006,94 +1183,80 @@ class MainActivity : Activity() {
                 if (enter || actionId != EditorInfo.IME_ACTION_UNSPECIFIED) onSearchGo()
                 true
             }
-            onBack = { hideKeyboard(); focusChannels() }
-        }
-        panel.addView(search, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
-
-        status = text(14f, Color.parseColor("#9AD4FF"))
-        panel.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
-
-        // actions in a column on the left: ◀ from the groups reaches them wherever the lists are scrolled
-        rail = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        modeButton = button("Guida TV") { setMode(!guideMode); focusChannels() }
-        listButton = button("Elenchi") { chooseLists() }
-        val railRow = { LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) } }
-        rail.addView(button("Cerca") { openSearch() }, railRow())
-        rail.addView(modeButton, railRow())
-        rail.addView(listButton, railRow())
-        rail.addView(button("Aggiorna") { loadList(refresh = true); updateEpg(force = true) }, railRow())
-        rail.addView(button("Azzera visti") { resetStats() }, railRow())
-
-        val cols = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        cols.addView(rail, LinearLayout.LayoutParams(dp(128), -1).apply { rightMargin = dp(14) })
-        groupList = listView().apply {
-            adapter = groupAdapter
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                    // while searching, the groups are narrowed to the results: moving through them keeps the search
-                    showGroup(pos)
-                }
-                override fun onNothingSelected(p: AdapterView<*>?) {}
+            // Back: keyboard away and back to the list (search kept); with no result to go to, the search is cleared
+            onBack = {
+                hideKeyboard()
+                if (firstRow() < 0) resetSearch()
+                if (firstRow() >= 0) focusChannels() else if (current != null) hidePanel() else finish()
             }
-            setOnItemClickListener { _, _, _, _ -> focusChannels() }
         }
+        chan.addView(search, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        status = text(13f, Color.parseColor("#9AD4FF"))
+        chan.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+
         channelList = listView().apply {
             adapter = rowAdapter
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                    // remember where the user is, to come back here from the search field or the other columns
-                    if (channelList.hasFocus()) {
-                        chanPos = pos; chanTop = v?.top ?: 0
-                    }
+                    // remember where the user is, to come back here from the search, the settings or a rebuild
+                    if (!channelList.hasFocus()) return
+                    val r = items.getOrNull(pos) as? Row ?: return
+                    chanPos = pos; chanTop = v?.top ?: 0
+                    sel = posOf(r)
+                    if (hits != null && sel != resultStart) movedInResults = true
                 }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
             // API 28: a focus requested before the panel's first layout is handed to the default view on layout;
             // without this it is the search field, and focusing it pops up the Fire TV keyboard
             if (android.os.Build.VERSION.SDK_INT >= 26) isFocusedByDefault = true
-            setOnItemClickListener { _, _, pos, _ ->
-                shown.getOrNull(pos)?.let { play(it.ch); hidePanel() }
+            setOnItemClickListener { _, v, pos, _ ->
+                val r = items.getOrNull(pos) as? Row ?: return@setOnItemClickListener
+                chanPos = pos; chanTop = v?.top ?: 0; sel = posOf(r)
+                if (hits != null) movedInResults = true
+                play(r.ch); hidePanel()
             }
         }
-        cols.addView(groupList, LinearLayout.LayoutParams(0, -1, 0.36f))
-        cols.addView(channelList, LinearLayout.LayoutParams(0, -1, 0.64f).apply { leftMargin = dp(14) })
-        panel.addView(cols, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(10) })
+        chan.addView(channelList, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(8) })
+        val cw = (resources.displayMetrics.widthPixels * 0.58).toInt()
+        panel.addView(chan, FrameLayout.LayoutParams(cw, -1, Gravity.END).apply { setMargins(0, dp(16), dp(16), dp(16)) })
 
-        root.addView(panel, FrameLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.64).toInt(), -1, Gravity.START))
+        root.addView(panel, FrameLayout.LayoutParams(-1, -1))
         // hidden until needed: a visible panel at start would give the search field the initial focus (and the keyboard)
         panel.visibility = View.GONE
         setContentView(root)
     }
 
-    /** Left column rows: label and, right-aligned, how many channels or programmes it holds. */
-    private inner class GroupAdapter : BaseAdapter() {
-        override fun getCount() = groups.size
-        override fun getItem(p: Int): Any = p
-        override fun getItemId(p: Int) = p.toLong()
-        override fun getView(p: Int, convert: View?, parent: ViewGroup?): View {
-            val row = (convert as? LinearLayout) ?: LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                addView(text(17f), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(text(15f, Color.parseColor("#AAAAAA")), LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) })
-            }
-            val g = groups[p]
-            row.setPadding(if (g.indent) dp(28) else dp(12), dp(9), dp(12), dp(9))
-            (row.getChildAt(0) as TextView).text = g.label
-            (row.getChildAt(1) as TextView).text = g.rows.size.toString()
-            return row
-        }
-    }
-
     /**
-     * Right column rows. Channel: logo | "N  Name" and, under it, the programme on air with its times and a thin
-     * progress bar. Programme (guide): logo | programme title and, under it, channel, times and what is left.
+     * The list. Divider: small folder label and its size. Channel: logo | "N  Name" with its folder on the right and,
+     * under it, the programme on air with its times and a thin progress bar. Programme (guide): logo | title with
+     * category and folder, and under it channel, times and what is left.
      */
     private inner class RowAdapter : BaseAdapter() {
-        override fun getCount() = shown.size
-        override fun getItem(p: Int): Any = p
+        override fun getCount() = items.size
+        override fun getItem(p: Int): Any = items[p]
         override fun getItemId(p: Int) = p.toLong()
+        override fun getViewTypeCount() = 2
+        override fun getItemViewType(p: Int) = if (items[p] is Header) 1 else 0
+        override fun areAllItemsEnabled() = false
+        override fun isEnabled(p: Int) = items.getOrNull(p) is Row
+
         override fun getView(p: Int, convert: View?, parent: ViewGroup?): View {
+            val it = items[p]
+            if (it is Header) {
+                val v = (convert as? LinearLayout) ?: LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(10), dp(10), dp(12), dp(3))
+                    addView(text(12f, Color.parseColor("#FFB25C"), bold = true), LinearLayout.LayoutParams(-2, -2))
+                    addView(View(context).apply { setBackgroundColor(Color.parseColor("#44FFB25C")) },
+                        LinearLayout.LayoutParams(0, dp(1), 1f).apply { leftMargin = dp(10); rightMargin = dp(10) })
+                    addView(text(12f, Color.parseColor("#AAAAAA")), LinearLayout.LayoutParams(-2, -2))
+                }
+                (v.getChildAt(0) as TextView).text = it.label
+                (v.getChildAt(2) as TextView).text = it.count.toString()
+                return v
+            }
             val row = (convert as? LinearLayout) ?: LinearLayout(this@MainActivity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -1101,17 +1264,24 @@ class MainActivity : Activity() {
                 addView(ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER },
                     LinearLayout.LayoutParams(dp(52), dp(39)).apply { rightMargin = dp(12) })
                 val col = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
-                col.addView(text(18f))
+                val line = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                line.addView(text(18f), LinearLayout.LayoutParams(0, -2, 1f))
+                line.addView(text(12f, Color.parseColor("#9A9A9A")).apply { maxWidth = dp(240) },
+                    LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10) })
+                col.addView(line)
                 col.addView(text(14f, Color.parseColor("#C8C8C8")))
                 col.addView(bar(3), LinearLayout.LayoutParams(-1, dp(3)).apply { topMargin = dp(3) })
                 addView(col, LinearLayout.LayoutParams(0, -2, 1f))
             }
-            val r = shown[p]
+            val r = it as Row
             val col = row.getChildAt(1) as LinearLayout
-            val t1 = col.getChildAt(0) as TextView
+            val line = col.getChildAt(0) as LinearLayout
+            val t1 = line.getChildAt(0) as TextView
+            val meta = line.getChildAt(1) as TextView
             val t2 = col.getChildAt(1) as TextView
             val pb = col.getChildAt(2) as ProgressBar
             logos.load(r.ch, row.getChildAt(0) as ImageView, dp(39))
+            meta.text = if (r.top) "${Stats.format(stats.of(r.ch))}  ·  ${folderOf(r.ch)}" else metaOf(r)
             val now = System.currentTimeMillis()
             if (r.guide && r.prog != null) {
                 val pr = r.prog
@@ -1122,8 +1292,7 @@ class MainActivity : Activity() {
                 pb.visibility = if (pr.isOn(now)) View.VISIBLE else View.GONE
                 pb.progress = pr.progress(now)
             } else {
-                val top = groups.getOrNull(groupPos)?.label == TOP && search.text.isEmpty()
-                t1.text = "${r.ch.number}   ${r.ch.name}" + if (top) "   · " + Stats.format(stats.of(r.ch)) else ""
+                t1.text = "${r.ch.number}   ${r.ch.name}"
                 val pr = epg.now(r.ch, now)
                 if (pr != null) {
                     t2.text = "${pr.title}  ·  ${Epg.hhmm(pr.start)}–${Epg.hhmm(pr.stop)}"
@@ -1141,7 +1310,6 @@ class MainActivity : Activity() {
 
     companion object {
         const val TOP = "★ Più guardati"
-        const val ALL = "Tutti i canali"
         const val ON_AIR = "In onda ora"
         const val NEXT = "Tra poco"
         const val RESULTS = "Risultati"

@@ -36,12 +36,16 @@ object Search {
         private val num = q.toIntOrNull()
         val empty get() = q.isEmpty()
 
-        /** 0 = no match; higher is better. [name] and [title] already normalized with [norm]. */
-        fun score(name: String, number: Int?, title: String?): Int {
+        /**
+         * 0 = no match; higher is better. [name], [title] (programme) and [folder] (source, group, category) already
+         * normalized with [norm]. A folder match ranks below any name or title match.
+         */
+        fun score(name: String, number: Int?, title: String?, folder: String? = null): Int {
             var s = 0
             if (num != null && number == num) s = 100
             s = maxOf(s, match(name, q), if (core != q) match(name, core) - 5 else 0)
             if (title != null && q.length >= 3) s = maxOf(s, match(title, q) - 8, if (core != q) match(title, core) - 12 else 0)
+            if (folder != null && q.length >= 3 && s == 0 && (folder.contains(q) || folder.contains(core))) s = 20
             return s
         }
     }
