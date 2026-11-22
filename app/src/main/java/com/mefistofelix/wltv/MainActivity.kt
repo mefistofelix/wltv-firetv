@@ -140,8 +140,10 @@ class MainActivity : Activity() {
         })
         ui.postDelayed(tick, 1000)
         ui.postDelayed(minute, 60_000)
+        updater = Updater(this)
         loadList(refresh = false)
         updateEpg()
+        refreshLauncherEntry()
     }
 
     override fun onStop() {
@@ -154,6 +156,100 @@ class MainActivity : Activity() {
         super.onStart()
         if (current != null && player.playbackState != Player.STATE_IDLE) {
             player.seekToDefaultPosition(); player.play()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        checkUpdate()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == Updater.ACTION_RESULT) {
+            progressDialog?.dismiss()
+            progressDialog = null
+            Updater.handleResult(this, intent)?.let { message(it, keepOpen = true) }
+        }
+    }
+
+    // ------------------------------------------------------------------ self-update (Updater.kt)
+
+    private lateinit var updater: Updater
+    private var updateDialog: AlertDialog? = null
+    private var progressDialog: AlertDialog? = null
+
+    /** At every start and return to the front (at most every 2 minutes): a newer build is offered in a dialog. */
+    private fun checkUpdate() {
+        updater.check { r ->
+            if (r == null || updater.snoozed(r)) return@check
+            ui.post { offerUpdate(r) }
+        }
+    }
+
+    private fun offerUpdate(r: Updater.Release) {
+        if (isDestroyed || isFinishing || updateDialog?.isShowing == true) return
+        val size = if (r.size > 0) " (" + String.format(java.util.Locale.ITALY, "%.1f", r.size / 1048576.0) + " MB)" else ""
+        val d = AlertDialog.Builder(this)
+            .setTitle("Aggiornamento disponibile")
+            .setMessage("È disponibile WLTV ${r.name}$size. Installata: 0.1.${updater.installedCode}.\n\n" +
+                "Dopo lo scaricamento si apre la schermata di installazione di Fire TV: conferma con «Installa».")
+            .setPositiveButton("Installa") { _, _ -> startUpdate(r) }
+            .setNegativeButton("Più tardi") { _, _ -> updater.snooze(r) }
+            .create()
+        d.setOnShowListener { d.getButton(AlertDialog.BUTTON_POSITIVE)?.requestFocus() }
+        d.setOnCancelListener { updater.snooze(r) }
+        updateDialog = d
+        d.show()
+    }
+
+    private fun startUpdate(r: Updater.Release) {
+        if (android.os.Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            askInstallPermission(r)
+            return
+        }
+        val note = text(16f).apply { setPadding(dp(24), dp(16), dp(24), dp(8)); text = "Scaricamento… 0%" }
+        val d = AlertDialog.Builder(this).setTitle("WLTV ${r.name}").setView(note).setCancelable(false).create()
+        d.show()
+        updater.install(this, r,
+            progress = { p -> ui.post { note.text = "Scaricamento… $p%" } },
+            failed = { msg -> ui.post { d.dismiss(); message("Aggiornamento non riuscito: $msg", keepOpen = true) } })
+        progressDialog = d // closed when the installer answers (onNewIntent) or on failure
+    }
+
+    /** Fire OS 7+ (Android 8+): installing needs the "Installa app sconosciute" switch for WLTV, once. */
+    private fun askInstallPermission(r: Updater.Release) {
+        val d = AlertDialog.Builder(this)
+            .setTitle("Permesso per installare")
+            .setMessage("Per aggiornarsi WLTV deve poter installare app. Serve una volta sola:\n\n" +
+                "Impostazioni → La mia Fire TV → Opzioni sviluppatore → Installa app sconosciute → WLTV: ATTIVO\n\n" +
+                "Poi torna qui e premi di nuovo «Installa».")
+            .setPositiveButton("Apri impostazioni") { _, _ ->
+                val tries = listOf(
+                    Intent("android.settings.MANAGE_UNKNOWN_APP_SOURCES", Uri.parse("package:$packageName")),
+                    Intent("android.settings.MANAGE_UNKNOWN_APP_SOURCES"),
+                    Intent(android.provider.Settings.ACTION_SETTINGS),
+                )
+                if (tries.none { i -> runCatching { startActivity(i) }.isSuccess }) {
+                    message("Apri le impostazioni dalla schermata Home di Fire TV", keepOpen = true)
+                }
+            }
+            .setNegativeButton("Più tardi") { _, _ -> updater.snooze(r) }
+            .create()
+        d.setOnShowListener { d.getButton(AlertDialog.BUTTON_POSITIVE)?.requestFocus() }
+        d.show()
+    }
+
+    /**
+     * Fire OS 6 only: its Appstore loses the launcher tile of a sideloaded app at every update and draws it again
+     * only when told the package was added. Done once per installed version (as in FireBro).
+     */
+    private fun refreshLauncherEntry() {
+        if (android.os.Build.VERSION.SDK_INT > 25) return
+        runCatching {
+            if (prefs.getInt("launcherEntry", 0) == updater.installedCode) return
+            prefs.edit().putInt("launcherEntry", updater.installedCode).apply()
+            sendBroadcast(Intent("com.amazon.tv.action.PACKAGE_ADDED", Uri.parse("package:$packageName")).setPackage("com.amazon.venezia"))
         }
     }
 
@@ -245,7 +341,7 @@ class MainActivity : Activity() {
             1 -> titles[0]
             else -> "${titles[0]} + ${titles.size - 1}"
         }
-        header.text = "WLTV  ·  $name"
+        header.text = "WLTV ${updater.installedCode}  ·  $name"
         listButton.text = "Elenchi (${titles.size})"
         current = current?.let { c -> channels.firstOrNull { it.key == c.key } ?: c }
         refreshGroups()

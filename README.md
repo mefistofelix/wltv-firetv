@@ -69,3 +69,15 @@ Oppure `tools\install.ps1 -Device 192.168.1.43:5555`.
 - I resolver seguono l'addon 1.2.14 con l'hotfix 121418. Quando i siti cambiano, l'addon pubblica un nuovo hotfix:
   il confronto con `broadcaster/*.py` dice cosa aggiornare in `Resolver.kt`.
 - Molti flussi sono riservati all'Italia (geoblocco).
+
+## Aggiornamenti automatici
+
+Come FireBro: all'avvio e ogni volta che torna in primo piano (al massimo ogni 2 minuti) WLTV legge
+`wltv.json` nel repository pubblico [mefistofelix/firetv-apps](https://github.com/mefistofelix/firetv-apps).
+Se c'è una versione più nuova la propone: *Installa* la scarica, ne controlla lo SHA-256 e apre la schermata di
+installazione di Fire TV (serve confermare con «Installa»); *Più tardi* la ripropone dopo 12 ore. Dopo
+l'aggiornamento WLTV si riapre da sola. La prima volta Fire OS chiede di attivare *Installa app sconosciute* per WLTV.
+
+La pubblicazione (`scripts/publish-update.sh`: APK nella release `wltv-N` di firetv-apps e `wltv.json`) la fa
+GitHub Actions dopo ogni build se il repository ha il secret `FIRETV_APPS_TOKEN` (token con permesso di scrittura
+sui contenuti di firetv-apps); altrimenti si lancia a mano: `bash scripts/publish-update.sh N out/apk/WLTV-N.apk`.

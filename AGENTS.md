@@ -35,6 +35,9 @@ N = run number = versionCode). No local JDK/SDK on the dev PC.
   the next start) by tvg-id, name, or longest tvg-id prefix
   (TGR -> rai3); the next source is tried when one fails; else an initials tile. Images cached in `files/logos`.
 - `Search.kt` — fuzzy matching of dictated names (Italian number words → digits).
+- `Updater.kt` / `Relauncher.kt` — self-update as in FireBro: `firetv-apps/wltv.json` checked in `onResume` (2 min
+  throttle), dialog, SHA-256 checked download, PackageInstaller session, reopen after our own update; Fire OS 6
+  launcher tile refresh. Published by `scripts/publish-update.sh` (Actions with secret `FIRETV_APPS_TOKEN`, or by hand).
 - `Http.kt` — OkHttp client with shared cookie jar, browser headers, `match` = scrapers.findSingleMatch.
 
 ## Device facts (from the sibling FireBro project)
