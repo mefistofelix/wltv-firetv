@@ -12,6 +12,8 @@ data class Channel(
     val logo: String,
     val tvgId: String,
     val source: String = "",
+    /** The list numbers it (tvg-chno, e.g. the DTT LCN): shown in number order, not split by group. */
+    val lcn: Boolean = false,
 ) {
     val key: String get() = url.trim()
 }
@@ -66,6 +68,7 @@ object M3u {
                 logo = attrs["tvg-logo"].orEmpty(),
                 tvgId = attrs["tvg-id"].orEmpty(),
                 source = source,
+                lcn = attrs["tvg-chno"]?.toIntOrNull() != null,
             )
         }
         return out

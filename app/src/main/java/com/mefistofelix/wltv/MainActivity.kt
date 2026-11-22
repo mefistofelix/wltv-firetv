@@ -392,7 +392,7 @@ class MainActivity : Activity() {
     /** Long OK on a channel (list, or the video in front): in or out of the favourites, saved at once. */
     private fun toggleFavorite(ch: Channel) {
         val on = favs.toggle(ch)
-        val note = if (on) "♥ Aggiunto ai preferiti: ${ch.name}" else "Tolto dai preferiti: ${ch.name}"
+        val note = if (on) "★ Aggiunto ai preferiti: ${ch.name}" else "Tolto dai preferiti: ${ch.name}"
         if (panel.visibility == View.VISIBLE) {
             status(note)
             rebuild()
@@ -445,10 +445,13 @@ class MainActivity : Activity() {
                 top.forEach { out += Row(it, null, block = TOP_BLOCK) }
             }
             val byFolder = LinkedHashMap<String, MutableList<Channel>>()
-            for (c in channels) byFolder.getOrPut(folderOf(c)) { ArrayList() } += c
+            // a numbered list (DTT) stays in number order under one divider; its group shows on each row
+            for (c in channels) byFolder.getOrPut(if (c.lcn) "\u0000" + c.source else folderOf(c)) { ArrayList() } += c
             for ((f, list) in byFolder) {
-                out += Header(f, list.size)
-                list.forEach { out += Row(it, null) }
+                val numbered = f.startsWith("\u0000")
+                val label = if (numbered) f.substring(1).ifBlank { "Canali" } else f
+                out += Header(label, list.size)
+                (if (numbered) list.sortedBy { it.number } else list).forEach { out += Row(it, null) }
             }
             return out
         }
@@ -1465,7 +1468,7 @@ class MainActivity : Activity() {
         }
         settings.addView(text(12f, Color.parseColor("#888888")).apply {
             isSingleLine = false; maxLines = 12
-            text = "▶ o Indietro: torna all'elenco\n\nNell'elenco:\nOK tenuto: ♥ preferito sì/no\n☰ ricerca ⇄ elenco\n⏪ ⏩ pagina su / giù\n⏯ inizio / fine elenco\n◀ queste impostazioni\nIndietro: annulla la ricerca"
+            text = "▶ o Indietro: torna all'elenco\n\nNell'elenco:\nOK tenuto: ★ preferito sì/no\n☰ ricerca ⇄ elenco\n⏪ ⏩ pagina su / giù\n⏯ inizio / fine elenco\n◀ queste impostazioni\nIndietro: annulla la ricerca"
         }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
         panel.addView(settings, FrameLayout.LayoutParams(dp(210), -1, Gravity.START).apply {
             setMargins(dp(16), dp(16), 0, dp(16))
@@ -1636,7 +1639,7 @@ class MainActivity : Activity() {
                 pb.visibility = if (pr.isOn(now)) View.VISIBLE else View.GONE
                 pb.progress = pr.progress(now)
             } else {
-                t1.text = (if (favs.has(r.ch)) "♥ " else "") + "${r.ch.number}   ${r.ch.name}"
+                t1.text = (if (favs.has(r.ch)) "★ " else "") + "${r.ch.number}   ${r.ch.name}"
                 val pr = epg.now(r.ch, now)
                 if (pr != null) {
                     t2.text = "${pr.title}  ·  ${Epg.hhmm(pr.start)}–${Epg.hhmm(pr.stop)}"
@@ -1653,11 +1656,11 @@ class MainActivity : Activity() {
     }
 
     companion object {
-        const val TOP = "★ Più guardati"
+        const val TOP = "◆ Più guardati"
         const val ON_AIR = "In onda ora"
         const val NEXT = "Tra poco"
         const val RESULTS = "Risultati"
-        const val FAVS = "♥ Preferiti"
+        const val FAVS = "★ Preferiti"
         const val FAV_BLOCK = 2
         const val TOP_BLOCK = 1
         const val ACTIVE_PREFIX = "\u0001"

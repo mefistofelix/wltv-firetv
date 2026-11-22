@@ -13,7 +13,7 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
 |---|---|---|
 | ▲ ▼, CH+ CH− | canale precedente / successivo (e riquadro col programma) | si muove nell'elenco |
 | OK, ◀ | apre il pannello (◀: vista **Canali**) | OK guarda il canale |
-| OK tenuto premuto | ♥ preferito sì / no per il canale in onda | ♥ preferito sì / no per il canale selezionato |
+| OK tenuto premuto | ★ preferito sì / no per il canale in onda | ★ preferito sì / no per il canale selezionato |
 | ▶, ⏩ | apre la **Guida TV** (programmi in onda) | nell'elenco ⏪ ⏩ = **pagina su / giù** |
 | ⏯ | ricarica il canale | nell'elenco: **inizio / fine** dell'elenco |
 | ≡ Menu | **ricerca**: pannello aperto e tastiera nel campo Cerca | dall'elenco al campo di ricerca e, ripremuto, di nuovo nell'elenco |
@@ -26,7 +26,7 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
 - **Pannello**: a sinistra dello schermo la colonna **impostazioni** (Elenchi, Aggiorna, Azzera visti, Esci); a
   destra in alto i due pulsanti **Canali** e **Guida TV (programmi)** (quello attivo è pieno e col pallino), il
   campo di ricerca con **✕ Azzera ricerca** e sotto l'**elenco**; in mezzo resta visibile il video.
-  L'elenco è **unico**: in cima *♥ Preferiti* e *★ Più guardati*, poi tutti i canali con dei piccoli **divisori di
+  L'elenco è **unico**: in cima *★ Preferiti* e *◆ Più guardati*, poi tutti i canali con dei piccoli **divisori di
   cartella** («elenco › gruppo» e numero di canali); ogni canale riporta anche la sua cartella a destra del nome, così
   si sa dove si è anche a metà cartella. Preferiti e più guardati compaiono di nuovo più sotto, al loro posto.
 - **Ricerca**: cerca nel nome, nel numero, nel **programma in onda** e nella **cartella** (elenco, gruppo, categoria).
@@ -52,10 +52,10 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
   (le prossime 4 ore, in ordine di orario); per ognuno il canale, la categoria, l'orario e
   quanto manca. OK guarda il canale che lo trasmette.
 - **Preferiti**: **OK tenuto premuto** su un canale dell'elenco (o col video a schermo intero, sul canale che stai
-  guardando) lo mette o lo toglie dai preferiti; sui canali preferiti compare ♥. Il blocco *♥ Preferiti* sta in cima
+  guardando) lo mette o lo toglie dai preferiti; sui canali preferiti compare ★. Il blocco *★ Preferiti* sta in cima
   all'elenco. I preferiti sono salvati per intero, quindi **restano anche se spegni l'elenco** da cui vengono e
   partecipano alla ricerca.
-- **Più guardati**: l'app conta il tempo di visione di ogni canale; il blocco *★ Più guardati* in cima mostra i
+- **Più guardati**: l'app conta il tempo di visione di ogni canale; il blocco *◆ Più guardati* in cima mostra i
   canali visti per almeno un minuto, in ordine di tempo, con il totale. *Azzera più guardati* li cancella.
 - **Ricerca vocale**: premi ≡ (o *Cerca*), poi il tasto microfono della tastiera Fire TV e di' il nome
   del canale («Rai tre», «canale cinque», «la sette», «venti») oppure di un **programma in onda** («Un posto al
