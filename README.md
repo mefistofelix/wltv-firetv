@@ -15,11 +15,15 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
 | OK, ◀ | apre il pannello **canali** | OK guarda il canale |
 | ▶, ⏩ | apre la **Guida TV** (programmi in onda) | ⏩ passa tra canali e guida |
 | ≡ Menu | apre il pannello e **riscarica gli elenchi** | **riscarica gli elenchi** |
-| ≡ Menu tenuto premuto | ricerca: tastiera aperta nel campo Cerca | idem |
+| ≡ Menu tenuto premuto, ⏪ | ricerca: tastiera aperta nel campo Cerca | idem |
+| ◀ ▶ | | tra colonne: azioni ◀ gruppi ◀ canali; si torna sempre al punto lasciato |
 | 0–9 | numero del canale (LCN) | idem |
 | Indietro | chiude il riquadro; due volte per uscire | chiude il pannello |
 | ⏯ | ricarica il canale | |
 
+- **Azioni**: Cerca, Guida TV, Elenchi, Aggiorna e Azzera visti sono in una colonna a sinistra del pannello: con ◀
+  dalla lista dei gruppi ci si arriva da qualunque punto, senza risalire le liste, e con ▶ (o Indietro dalla ricerca)
+  si ritorna sul canale e sul gruppo di prima.
 - **Elenchi**: si possono attivare **più elenchi insieme** (caselle di spunta, salvate subito: nessun pulsante di
   conferma, Indietro torna su e all'uscita i canali si ricaricano; in cima a ogni sezione *Seleziona tutti /
   deseleziona tutti*), divisi in quattro sezioni come

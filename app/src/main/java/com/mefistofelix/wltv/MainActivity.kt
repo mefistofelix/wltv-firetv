@@ -87,6 +87,10 @@ class MainActivity : Activity() {
     private lateinit var channelList: ListView
     private lateinit var listButton: Button
     private lateinit var modeButton: Button
+    private lateinit var rail: LinearLayout
+    /** Row of the channel column the user was on, and its height on screen. */
+    private var chanPos = 0
+    private var chanTop = 0
 
     /** A row of the right column: a channel, or (guide mode) a programme of that channel. */
     private class Row(val ch: Channel, val prog: Prog?, val guide: Boolean = false)
@@ -305,7 +309,9 @@ class MainActivity : Activity() {
         shown = groups.getOrNull(pos)?.rows ?: emptyList()
         rowAdapter.notifyDataSetChanged()
         val cur = if (hits != null) -1 else shown.indexOfFirst { it.ch.key == current?.key }
-        channelList.setSelection(if (cur >= 0) cur else 0)
+        chanPos = if (cur >= 0) cur else 0
+        chanTop = 0
+        channelList.setSelection(chanPos)
     }
 
     private fun setMode(guide: Boolean) {
@@ -472,19 +478,37 @@ class MainActivity : Activity() {
             if (current != null) hidePanel() else finish()
             return true
         } else if (code == KeyEvent.KEYCODE_DPAD_DOWN && search.hasFocus()) {
-            // the text field keeps ▼ for its cursor: go to the buttons below
-            hideKeyboard(); modeButton.requestFocus(); return true
+            // the text field keeps ▼ for its cursor: back to the channel where the user was
+            hideKeyboard(); focusChannels(); return true
         } else if (code == KeyEvent.KEYCODE_DPAD_LEFT && channelList.hasFocus()) {
-            // ListView would pick the group row next to the focused row: keep the group being shown
-            val keep = groupPos
-            groupList.requestFocus()
-            ui.post {
-                val v = groupList.getChildAt(keep - groupList.firstVisiblePosition)
-                groupList.setSelectionFromTop(keep, v?.top ?: 0)
-            }
-            return true
+            focusGroups(); return true
+        } else if (code == KeyEvent.KEYCODE_DPAD_RIGHT && groupList.hasFocus()) {
+            focusChannels(); return true
+        } else if (code == KeyEvent.KEYCODE_DPAD_RIGHT && rail.hasFocus()) {
+            focusGroups(); return true
+        }
+        if (code == KeyEvent.KEYCODE_MEDIA_REWIND) {
+            openSearch(); return true
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    /*
+     * Moving between the columns: a ListView taking focus picks the row nearest to the view the focus comes from,
+     * which loses the user's place. These put the focus back on the row (and at the height) it was left on.
+     */
+    private fun focusGroups() {
+        val keep = groupPos
+        val top = groupList.getChildAt(keep - groupList.firstVisiblePosition)?.top ?: 0
+        groupList.requestFocus()
+        ui.post { groupList.setSelectionFromTop(keep, top) }
+    }
+
+    private fun focusChannels() {
+        val keep = chanPos.coerceIn(0, (shown.size - 1).coerceAtLeast(0))
+        val top = channelList.getChildAt(keep - channelList.firstVisiblePosition)?.top ?: chanTop
+        channelList.requestFocus()
+        ui.post { channelList.setSelectionFromTop(keep, top) }
     }
 
     private val digitTimeout = Runnable {
@@ -587,7 +611,7 @@ class MainActivity : Activity() {
     private val dictationDone = Runnable {
         if (!search.hasFocus()) return@Runnable
         hideKeyboard()
-        channelList.requestFocus()
+        focusChannels()
     }
 
     // ------------------------------------------------------------------ list chooser
@@ -886,25 +910,26 @@ class MainActivity : Activity() {
                 if (enter || actionId != EditorInfo.IME_ACTION_UNSPECIFIED) onSearchGo()
                 true
             }
-            onBack = { hideKeyboard(); channelList.requestFocus() }
+            onBack = { hideKeyboard(); focusChannels() }
         }
         panel.addView(search, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
-
-        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        modeButton = button("Guida TV") { setMode(!guideMode); channelList.requestFocus() }
-        listButton = button("Elenchi") { chooseLists() }
-        val gap = { LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) } }
-        buttons.addView(modeButton)
-        buttons.addView(listButton, gap())
-        buttons.addView(button("Cerca") { openSearch() }, gap())
-        buttons.addView(button("Aggiorna") { loadList(refresh = true); updateEpg(force = true) }, gap())
-        buttons.addView(button("Azzera visti") { resetStats() }, gap())
-        panel.addView(buttons, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
 
         status = text(14f, Color.parseColor("#9AD4FF"))
         panel.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
 
+        // actions in a column on the left: ◀ from the groups reaches them wherever the lists are scrolled
+        rail = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        modeButton = button("Guida TV") { setMode(!guideMode); focusChannels() }
+        listButton = button("Elenchi") { chooseLists() }
+        val railRow = { LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) } }
+        rail.addView(button("Cerca") { openSearch() }, railRow())
+        rail.addView(modeButton, railRow())
+        rail.addView(listButton, railRow())
+        rail.addView(button("Aggiorna") { loadList(refresh = true); updateEpg(force = true) }, railRow())
+        rail.addView(button("Azzera visti") { resetStats() }, railRow())
+
         val cols = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        cols.addView(rail, LinearLayout.LayoutParams(dp(128), -1).apply { rightMargin = dp(14) })
         groupList = listView().apply {
             adapter = groupAdapter
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -914,10 +939,19 @@ class MainActivity : Activity() {
                 }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
-            setOnItemClickListener { _, _, _, _ -> channelList.requestFocus() }
+            setOnItemClickListener { _, _, _, _ -> focusChannels() }
         }
         channelList = listView().apply {
             adapter = rowAdapter
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    // remember where the user is, to come back here from the search field or the other columns
+                    if (channelList.hasFocus()) {
+                        chanPos = pos; chanTop = v?.top ?: 0
+                    }
+                }
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
             // API 28: a focus requested before the panel's first layout is handed to the default view on layout;
             // without this it is the search field, and focusing it pops up the Fire TV keyboard
             if (android.os.Build.VERSION.SDK_INT >= 26) isFocusedByDefault = true
@@ -929,7 +963,7 @@ class MainActivity : Activity() {
         cols.addView(channelList, LinearLayout.LayoutParams(0, -1, 0.64f).apply { leftMargin = dp(14) })
         panel.addView(cols, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(10) })
 
-        root.addView(panel, FrameLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.56).toInt(), -1, Gravity.START))
+        root.addView(panel, FrameLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.64).toInt(), -1, Gravity.START))
         // hidden until needed: a visible panel at start would give the search field the initial focus (and the keyboard)
         panel.visibility = View.GONE
         setContentView(root)
