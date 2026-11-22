@@ -497,6 +497,7 @@ class MainActivity : Activity() {
     /** Rebuilds the list and selects [target] (default: where the user is; else the channel playing) at height [top]. */
     private fun rebuild(target: Pos? = sel, top: Int = chanTop, toCurrent: Boolean = true) {
         items = buildItems()
+        chanPages.clear()
         rowAdapter.notifyDataSetChanged()
         var i = indexOf(target)
         if (i < 0 && toCurrent) i = indexOf(current?.let { Pos(it.key) })
@@ -780,11 +781,17 @@ class MainActivity : Activity() {
     }
 
     /** ⏪ ⏩ in the list: one screen up / down. */
+    private val chanPages = PageTrail()
+
     private fun page(step: Int) {
-        val n = (channelList.lastVisiblePosition - channelList.firstVisiblePosition).coerceAtLeast(1)
-        var t = (chanPos + step * n).coerceIn(0, items.size - 1)
-        if (items[t] !is Row) t = if (step > 0) firstRow(t).takeIf { it >= 0 } ?: lastRow() else (t downTo 0).firstOrNull { items[it] is Row } ?: firstRow()
-        moveTo(t, chanTop)
+        val top = channelList.getChildAt(chanPos - channelList.firstVisiblePosition)?.top ?: chanTop
+        val go = chanPages.next(chanPos, top, step) {
+            val n = (channelList.lastVisiblePosition - channelList.firstVisiblePosition).coerceAtLeast(1)
+            var t = (chanPos + step * n).coerceIn(0, items.size - 1)
+            if (items[t] !is Row) t = if (step > 0) firstRow(t).takeIf { it >= 0 } ?: lastRow() else (t downTo 0).firstOrNull { items[it] is Row } ?: firstRow()
+            t
+        } ?: return
+        moveTo(go.first, go.second)
     }
 
     /** ⏯ in the list: to the first row, or to the last one when already on the first. */
@@ -1089,12 +1096,17 @@ class MainActivity : Activity() {
         }
 
         /** ⏪ ⏩: one screen up / down. */
+        private val pages = PageTrail()
+
         private fun page(step: Int) {
             val cur = list.selectedItemPosition.coerceAtLeast(0)
-            val n = (list.lastVisiblePosition - list.firstVisiblePosition).coerceAtLeast(1)
-            var t = (cur + step * n).coerceIn(0, rows.size - 1)
-            if (isHeader(rows[t])) t = (if (step > 0) (t until rows.size) else (t downTo 0)).firstOrNull { !isHeader(rows[it]) } ?: cur
-            moveTo(t, list.selectedView?.top ?: 0)
+            val go = pages.next(cur, list.selectedView?.top ?: 0, step) {
+                val n = (list.lastVisiblePosition - list.firstVisiblePosition).coerceAtLeast(1)
+                var t = (cur + step * n).coerceIn(0, rows.size - 1)
+                if (isHeader(rows[t])) t = (if (step > 0) (t until rows.size) else (t downTo 0)).firstOrNull { !isHeader(rows[it]) } ?: cur
+                t
+            } ?: return
+            moveTo(go.first, go.second)
         }
 
         /** ⏯: first row, or the last one when already on the first. */
