@@ -52,16 +52,16 @@ import androidx.media3.ui.PlayerView
 import java.util.concurrent.Executors
 
 /**
- * Single activity: fullscreen player, info banner, and the panel: a settings column on the left of the screen and,
- * on the right, the search field over ONE list. The list holds the most watched channels on top, then every channel
- * under small folder dividers ("source › group"); each row also names its folder. Two modes: channels, and the TV
- * guide (rows = programmes on air or coming next; OK plays the channel showing it).
- * The search narrows the list without losing the place: the row the user was on stays selected when it is still in
- * the results, and Back (or clearing the text) puts the full list back on that row, or on the result the user moved to.
- * Remote, video in front: ▲▼ / CH± zap, OK or ◀ = channels, long OK = favourite on/off, ▶ or ⏩ = guide, Menu = search (voice: mic of the Fire TV
- * keyboard), long Menu = re-download, digits = channel number, ⏯ = reload.
- * In the list: long OK = favourite on/off (favourites are kept whole, see [Favorites]), ◀ = settings, ▲ from the first row = search field, Menu = search, Back = reset the search, then close,
- * ⏪ ⏩ = previous / next folder.
+ * Single activity: fullscreen player, info banner, and the panel: a settings column on the left of the screen
+ * (lists, refresh, reset stats, exit) and, on the right, the Canali / Guida TV tabs, the search field with ✕ and ONE
+ * list: favourites and most watched on top, then every channel under small folder dividers ("source › group"); each
+ * row also names its folder. The guide view lists programmes on air or coming next (OK plays the channel).
+ * Search: OK on the keyboard only filters (focus on the first result); the filter stays until Back or ✕, which put the
+ * whole list back on the row the user was on before searching. Channels and guide keep their own search and place.
+ * Remote, video in front: ▲▼ / CH± zap, OK or ◀ = panel, long OK = favourite on/off, ▶ or ⏩ = guide, Menu = search
+ * (voice: mic of the Fire TV keyboard), long Menu = re-download, digits = channel number, ⏯ = reload.
+ * In the list: long OK = favourite on/off (kept whole, see [Favorites]), ◀ = settings, Menu = search field ⇄ list,
+ * ⏪ ⏩ = page up / down, ⏯ = start / end, Back = reset the search, then close.
  */
 @OptIn(UnstableApi::class)
 class MainActivity : Activity() {
@@ -92,7 +92,10 @@ class MainActivity : Activity() {
     private lateinit var search: SearchField
     private lateinit var channelList: ListView
     private lateinit var listButton: Button
-    private lateinit var modeButton: Button
+    private lateinit var tabs: LinearLayout
+    private lateinit var tabChannels: Button
+    private lateinit var tabGuide: Button
+    private lateinit var resetButton: Button
     private lateinit var settings: LinearLayout
     /** Settings button focused last: ◀ from the list goes back to it. */
     private var lastSetting: View? = null
@@ -130,8 +133,13 @@ class MainActivity : Activity() {
     private var anchor: Pos? = null
     private var anchorTop = 0
     /** The result selected when the results came; another one selected = the user moved through the results. */
-    private var resultStart: Pos? = null
-    private var movedInResults = false
+    /** Set while the search text is changed by the app (mode switch, reset): no new search. */
+    private var restoring = false
+    /** Row to select when the results come back after a mode switch. */
+    private var restoreSel: Pos? = null
+    /** Search and place of the other mode (channels / guide), each kept while the user is in the other one. */
+    private class ModeState(var query: String = "", var sel: Pos? = null, var top: Int = 0, var anchor: Pos? = null, var anchorTop: Int = 0)
+    private val modeStates = arrayOf(ModeState(), ModeState())
     /** Active search: score by row key ([hitKey]); null = no search. */
     private var hits: Map<String, Int>? = null
     private var searchGen = 0
@@ -393,7 +401,7 @@ class MainActivity : Activity() {
 
     private var listName = ""
     private fun updateTitle() {
-        listTitle.text = (if (guideMode) "Guida TV" else "Canali") + if (listName.isNotEmpty()) "  ·  $listName" else ""
+        listTitle.text = listName
     }
 
     /** Folder of a channel as shown on its divider and its row: "source › group" when several lists are on. */
@@ -483,12 +491,12 @@ class MainActivity : Activity() {
 
     private fun firstRow(from: Int = 0) = (from until items.size).firstOrNull { items[it] is Row } ?: -1
 
-    /** Rebuilds the list and selects [target] (default: where the user is) at height [top]. */
-    private fun rebuild(target: Pos? = sel, top: Int = chanTop) {
+    /** Rebuilds the list and selects [target] (default: where the user is; else the channel playing) at height [top]. */
+    private fun rebuild(target: Pos? = sel, top: Int = chanTop, toCurrent: Boolean = true) {
         items = buildItems()
         rowAdapter.notifyDataSetChanged()
         var i = indexOf(target)
-        if (i < 0) i = indexOf(current?.let { Pos(it.key) })
+        if (i < 0 && toCurrent) i = indexOf(current?.let { Pos(it.key) })
         if (i < 0) i = firstRow()
         if (i < 0) return
         chanPos = i
@@ -497,18 +505,54 @@ class MainActivity : Activity() {
         channelList.setSelectionFromTop(i, top)
     }
 
+    /**
+     * Channels ⇄ guide (the tabs on top of the list). Each mode keeps its own search, place, and place before the
+     * search: coming back finds them as they were left.
+     */
     private fun setMode(guide: Boolean) {
         if (guideMode == guide) return
+        modeStates[if (guideMode) 1 else 0].apply {
+            query = search.text.toString(); sel = this@MainActivity.sel; top = chanTop
+            anchor = this@MainActivity.anchor; anchorTop = this@MainActivity.anchorTop
+        }
         guideMode = guide
-        modeButton.text = if (guide) "Canali" else "Guida TV"
+        updateTabs()
         updateTitle()
+        val st = modeStates[if (guide) 1 else 0]
+        ui.removeCallbacks(searchRun)
+        searchGen++
         hits = null
-        anchor = null
-        if (search.text.isNotEmpty()) search.setText("")
-        sel = null
-        rebuild(current?.let { Pos(it.key) }, 0)
-        if (guide) status(if (epg.parsedAt == 0L) "Guida TV in caricamento…" else "Programmi in onda e prossimi")
-        else status("${channels.size} canali")
+        anchor = st.anchor; anchorTop = st.anchorTop
+        sel = st.sel; chanTop = st.top
+        restoring = true; search.setText(st.query); restoring = false
+        resetButton.visibility = if (st.query.isEmpty()) View.GONE else View.VISIBLE
+        if (st.query.isBlank()) {
+            rebuild(sel ?: current?.let { Pos(it.key) }, if (sel != null) chanTop else dp(60))
+            if (guide) status(if (epg.parsedAt == 0L) "Guida TV in caricamento…" else "Programmi in onda e prossimi")
+            else status("${channels.size} canali")
+        } else {
+            items = emptyList(); rowAdapter.notifyDataSetChanged()
+            if (guide) items = buildItems() // fills guideRows for the search
+            restoreSel = st.sel
+            searchRun.run()
+        }
+    }
+
+    /** The two tabs: the mode on show is filled, the other plain; the focused one gets the white focus look. */
+    private fun updateTabs() {
+        for ((b, on) in listOf(tabChannels to !guideMode, tabGuide to guideMode)) {
+            b.background = StateListDrawable().apply {
+                addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply {
+                    setColor(Color.WHITE); cornerRadius = dp(6).toFloat(); setStroke(dp(3), Color.parseColor("#FF8A00"))
+                })
+                addState(intArrayOf(), GradientDrawable().apply {
+                    setColor(Color.parseColor(if (on) "#3D5370" else "#1AFFFFFF")); cornerRadius = dp(6).toFloat()
+                    if (on) setStroke(dp(2), Color.parseColor("#FF8A00"))
+                })
+            }
+            b.setTypeface(null, if (on) Typeface.BOLD else Typeface.NORMAL)
+            b.text = (if (on) "● " else "") + if (b === tabChannels) "Canali" else "Guida TV (programmi)"
+        }
     }
 
     // ------------------------------------------------------------------ playback
@@ -611,8 +655,9 @@ class MainActivity : Activity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val code = event.keyCode
+        val panelOpen = panel.visibility == View.VISIBLE
         if (code == KeyEvent.KEYCODE_MENU) {
-            // short = search (from anywhere, the list keeps its place), long = download the lists again
+            // short: video → search; in the panel it goes between the search field and the list. Long: re-download
             if (event.action == KeyEvent.ACTION_DOWN) {
                 if (event.repeatCount == 1) {
                     menuLongHandled = true
@@ -620,12 +665,15 @@ class MainActivity : Activity() {
                     loadList(refresh = true)
                 }
             } else if (event.action == KeyEvent.ACTION_UP) {
-                if (!menuLongHandled) openSearch()
+                if (!menuLongHandled) {
+                    if (panelOpen && search.hasFocus()) {
+                        hideKeyboard(); focusChannels()
+                    } else openSearch()
+                }
                 menuLongHandled = false
             }
             return true
         }
-        val panelOpen = panel.visibility == View.VISIBLE
         if ((code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) && (!panelOpen || okDown)) {
             // video in front: short OK = channels, long OK = favourite on / off for the channel playing
             when (event.action) {
@@ -634,9 +682,7 @@ class MainActivity : Activity() {
                     1 -> { okLongHandled = true; current?.let { toggleFavorite(it) } }
                 }
                 KeyEvent.ACTION_UP -> {
-                    if (okDown && !okLongHandled && !panelOpen) {
-                        setMode(false); showPanel()
-                    }
+                    if (okDown && !okLongHandled && !panelOpen) showPanel()
                     okDown = false
                 }
             }
@@ -655,9 +701,7 @@ class MainActivity : Activity() {
             when (code) {
                 KeyEvent.KEYCODE_DPAD_UP -> { zap(-1); return true }
                 KeyEvent.KEYCODE_DPAD_DOWN -> { zap(1); return true }
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    setMode(false); showPanel(); return true
-                }
+                KeyEvent.KEYCODE_DPAD_LEFT -> { setMode(false); showPanel(); return true }
                 KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { setMode(true); showPanel(); return true }
                 KeyEvent.KEYCODE_MEDIA_REWIND -> { openSearch(); return true }
                 KeyEvent.KEYCODE_INFO -> { info(current); return true }
@@ -682,7 +726,7 @@ class MainActivity : Activity() {
             code == KeyEvent.KEYCODE_BACK -> {
                 when {
                     inSettings -> focusChannels()
-                    hits != null || search.text.isNotEmpty() -> resetSearch()
+                    hits != null || search.text.isNotEmpty() -> { resetSearch(); focusChannels() }
                     current != null -> hidePanel()
                     else -> finish()
                 }
@@ -695,9 +739,9 @@ class MainActivity : Activity() {
             code == KeyEvent.KEYCODE_DPAD_LEFT && inList -> { focusSettings(); return true }
             code == KeyEvent.KEYCODE_DPAD_RIGHT && inSettings -> { focusChannels(); return true }
             code == KeyEvent.KEYCODE_DPAD_LEFT && inSettings -> return true
-            code == KeyEvent.KEYCODE_MEDIA_REWIND && inList -> { jumpFolder(-1); return true }
-            code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD && inList -> { jumpFolder(1); return true }
-            code == KeyEvent.KEYCODE_MEDIA_REWIND -> { openSearch(); return true }
+            code == KeyEvent.KEYCODE_MEDIA_REWIND && inList -> { page(-1); return true }
+            code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD && inList -> { page(1); return true }
+            code == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE && inList -> { startOrEnd(); return true }
             code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { setMode(!guideMode); focusChannels(); return true }
         }
         return super.dispatchKeyEvent(event)
@@ -722,35 +766,28 @@ class MainActivity : Activity() {
         v?.requestFocus()
     }
 
-    /** ⏪ ⏩ in the list: first row of the previous / next folder. */
-    private fun jumpFolder(step: Int) {
-        val cur = chanPos
-        val heads = items.indices.filter { items[it] is Header }
-        if (heads.isEmpty()) return
-        val mine = heads.lastOrNull { it < cur } ?: heads.first()
-        val target = if (step > 0) heads.firstOrNull { it > cur } else heads.lastOrNull { it < mine } ?: mine
-        val row = target?.let { firstRow(it) } ?: return
-        if (row < 0) return
-        channelList.setSelectionFromTop(row, dp(24))
+    private fun lastRow() = items.indices.lastOrNull { items[it] is Row } ?: -1
+
+    /** Selects row [i] of the list (focused) and remembers it at once (several key presses can come before the callback). */
+    private fun moveTo(i: Int, top: Int) {
+        if (i < 0) return
+        chanPos = i; chanTop = top
+        sel = posOf(items[i] as Row)
+        channelList.setSelectionFromTop(i, top)
     }
 
-    /** Settings → "Cartelle": every divider of the list with its size; the one picked is shown in the list. */
-    private fun chooseFolder() {
-        val heads = items.indices.filter { items[it] is Header }
-        if (heads.isEmpty()) return
-        val labels = heads.map { (items[it] as Header).let { h -> "${h.label}  ·  ${h.count}" } as CharSequence }.toTypedArray()
-        val mine = heads.indexOfLast { it < chanPos }.coerceAtLeast(0)
-        AlertDialog.Builder(this).setTitle("Vai alla cartella")
-            .setSingleChoiceItems(labels, mine) { d, which ->
-                d.dismiss()
-                val row = firstRow(heads[which])
-                if (row >= 0) {
-                    chanPos = row; chanTop = dp(24)
-                    sel = posOf(items[row] as Row)
-                    focusChannels()
-                }
-            }
-            .show()
+    /** ⏪ ⏩ in the list: one screen up / down. */
+    private fun page(step: Int) {
+        val n = (channelList.lastVisiblePosition - channelList.firstVisiblePosition).coerceAtLeast(1)
+        var t = (chanPos + step * n).coerceIn(0, items.size - 1)
+        if (items[t] !is Row) t = if (step > 0) firstRow(t).takeIf { it >= 0 } ?: lastRow() else (t downTo 0).firstOrNull { items[it] is Row } ?: firstRow()
+        moveTo(t, chanTop)
+    }
+
+    /** ⏯ in the list: to the first row, or to the last one when already on the first. */
+    private fun startOrEnd() {
+        val first = firstRow()
+        if (chanPos <= first) moveTo(lastRow(), channelList.height - dp(70)) else moveTo(first, 0)
     }
 
     private val digitTimeout = Runnable {
@@ -779,7 +816,7 @@ class MainActivity : Activity() {
             rebuild(target, if (target == sel) chanTop else dp(60))
         }
         // after the layout pass: a list that has just been filled does not keep a focus requested now
-        if (!search.hasFocus() && !settings.hasFocus()) {
+        if (!search.hasFocus() && !settings.hasFocus() && !tabs.hasFocus()) {
             channelList.requestFocus()
             panel.post { if (panel.findFocus() == null) focusChannels() }
         }
@@ -805,6 +842,8 @@ class MainActivity : Activity() {
 
     /** Typing: wait for a pause, then search off the main thread (thousands of rows; dictation sends many updates). */
     private fun onSearchText(q: String) {
+        if (restoring) return
+        resetButton.visibility = if (q.isEmpty()) View.GONE else View.VISIBLE
         ui.removeCallbacks(searchRun)
         ui.postDelayed(searchRun, if (q.isBlank()) 0 else 250)
     }
@@ -831,79 +870,78 @@ class MainActivity : Activity() {
                 if (s > 0) found[hitKey(r)] = s
             }
             ui.post {
-                if (gen != searchGen || search.text.toString() != text) return@post
+                if (gen != searchGen || search.text.toString() != text || guide != guideMode) return@post
                 showResults(found)
-                if (goPending) playBestResult()
-                status(if (found.isEmpty()) "Nessun risultato per “$text”  ·  Indietro = tutto l'elenco"
-                else "${found.size} risultati per “$text”  ·  Indietro = tutto l'elenco")
+                status(if (found.isEmpty()) "Nessun risultato per “$text”  ·  Indietro o ✕ = tutto l'elenco"
+                else "${found.size} risultati per “$text”  ·  Indietro o ✕ = tutto l'elenco")
+                if (focusResults) {
+                    focusResults = false
+                    focusChannels()
+                }
             }
         }
     }
 
-    /** The row the user was on stays selected when it is among the results, else the best result is. */
+    /**
+     * The results replace the list, on the first one (or, coming back to a mode, on the row the user had left).
+     * The place in the whole list is kept in [anchor] for the reset.
+     */
     private fun showResults(found: Map<String, Int>) {
-        if (hits == null) {
+        if (hits == null && anchor == null) {
             anchor = sel; anchorTop = chanTop
         }
         hits = found
-        val keep = anchor?.let { a -> Pos(a.ch, 0, a.start) }
-        val kept = keep != null && (if (guideMode) found.keys.any { it.startsWith(keep.ch + "\u0000") } else keep.ch in found)
-        rebuild(if (kept) keep else null, if (kept) dp(60) else 0)
-        resultStart = sel
-        movedInResults = false
+        val back = restoreSel
+        restoreSel = null
+        if (back != null) rebuild(back, chanTop) else {
+            rebuild(null, 0, toCurrent = false)
+        }
     }
 
-    /**
-     * Back from the list or an empty field: the whole list again, on the result the user moved to or played, or
-     * else on the row they were on before searching.
-     */
+    /** Reset (Back, ✕, empty text): the whole list again, on the row the user was on before searching. */
     private fun resetSearch() {
         if (hits == null && search.text.isEmpty()) return
         ui.removeCallbacks(searchRun)
         searchGen++
-        val target = if (movedInResults) sel?.let { Pos(it.ch, 0, it.start) } else anchor
-        val top = if (movedInResults) chanTop else anchorTop
+        val target = anchor
+        val top = anchorTop
         hits = null
         anchor = null
-        movedInResults = false
-        if (search.text.isNotEmpty()) search.setText("")
+        if (search.text.isNotEmpty()) {
+            restoring = true; search.setText(""); restoring = false
+        }
+        resetButton.visibility = View.GONE
         rebuild(target, top)
         status(if (guideMode) "Programmi in onda e prossimi" else "${channels.size} canali")
     }
 
-    /** IME "Go": play the best match as soon as the results are there (the search stays, Back clears it). */
-    private var goPending = false
+    /** Keyboard "Go"/OK: the keyboard closes and the focus goes to the first result; nothing starts playing. */
+    private var focusResults = false
 
     private fun onSearchGo() {
         hideKeyboard()
         if (search.text.isBlank()) {
             focusChannels(); return
         }
-        goPending = true
+        focusResults = true
         ui.removeCallbacks(searchRun)
         searchRun.run()
-    }
-
-    private fun playBestResult() {
-        goPending = false
-        val i = firstRow()
-        if (i < 0) {
-            focusChannels(); return
-        }
-        val best = items[i] as Row
-        chanPos = i; chanTop = 0; sel = posOf(best); movedInResults = true
-        play(best.ch)
-        hidePanel()
     }
 
     /** Dictation commits whole words at once: when it settles, close the keyboard and show the results. */
     private val dictationDone = Runnable {
         if (!search.hasFocus()) return@Runnable
         hideKeyboard()
-        focusChannels()
+        focusResults = true
+        if (hits != null) focusChannels()
     }
 
     // ------------------------------------------------------------------ list chooser
+
+    /** Search, place, and place before the search of the lists screen, kept between one opening and the next. */
+    private var listsQuery = ""
+    private var listsSel: String? = null
+    private var listsAnchor: String? = null
 
     private fun chooseLists() {
         status("Scarico gli elenchi disponibili…")
@@ -936,6 +974,7 @@ class MainActivity : Activity() {
         private var rows: List<Any> = emptyList()
         private var selKey: String? = null
         private var anchorKey: String? = null
+        private val reset = button("✕ Azzera ricerca") { clearSearch() }.apply { visibility = View.GONE }
         private var query = ""
 
         private fun key(r: Any): String = when (r) {
@@ -1026,17 +1065,40 @@ class MainActivity : Activity() {
         }
 
         private fun focusList() {
-            val i = rows.indexOfFirst { key(it) == selKey }.takeIf { it >= 0 } ?: rows.indexOfFirst { it !is String }
+            val i = rows.indexOfFirst { key(it) == selKey }.takeIf { it >= 0 } ?: rows.indexOfFirst { !isHeader(it) }
             list.requestFocus()
             if (i >= 0) ui.post { list.setSelectionFromTop(i, list.selectedView?.top ?: dp(60)) }
         }
 
+        /** Reset (Back, ✕): every list again, on the row the user was on before searching. */
         private fun clearSearch() {
             val back = anchorKey ?: selKey
             anchorKey = null
             field.setText("") // the watcher rebuilds
             select(back)
             focusList()
+        }
+
+        private fun moveTo(i: Int, top: Int) {
+            if (i < 0) return
+            selKey = key(rows[i])
+            list.setSelectionFromTop(i, top)
+        }
+
+        /** ⏪ ⏩: one screen up / down. */
+        private fun page(step: Int) {
+            val cur = list.selectedItemPosition.coerceAtLeast(0)
+            val n = (list.lastVisiblePosition - list.firstVisiblePosition).coerceAtLeast(1)
+            var t = (cur + step * n).coerceIn(0, rows.size - 1)
+            if (isHeader(rows[t])) t = (if (step > 0) (t until rows.size) else (t downTo 0)).firstOrNull { !isHeader(rows[it]) } ?: cur
+            moveTo(t, list.selectedView?.top ?: 0)
+        }
+
+        /** ⏯: first row, or the last one when already on the first. */
+        private fun startOrEnd() {
+            val first = rows.indexOfFirst { !isHeader(it) }
+            val last = rows.indexOfLast { !isHeader(it) }
+            if (list.selectedItemPosition <= first) moveTo(last, list.height - dp(60)) else moveTo(first, 0)
         }
 
         private val adapter = object : BaseAdapter() {
@@ -1060,15 +1122,10 @@ class MainActivity : Activity() {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(dp(12), dp(8), dp(12), dp(8))
-                    addView(View(context), LinearLayout.LayoutParams(dp(18), dp(18)).apply { rightMargin = dp(14) })
+                    addView(View(context), LinearLayout.LayoutParams(dp(24), dp(24)).apply { rightMargin = dp(14) })
                     addView(text(17f), LinearLayout.LayoutParams(0, -2, 1f))
                 }
-                val on = isOn(r)
-                row.getChildAt(0).background = GradientDrawable().apply {
-                    cornerRadius = dp(3).toFloat()
-                    setStroke(dp(2), Color.WHITE)
-                    setColor(if (on) Color.parseColor("#FF8A00") else Color.TRANSPARENT)
-                }
+                row.getChildAt(0).background = CheckDrawable(isOn(r), resources.displayMetrics.density)
                 (row.getChildAt(1) as TextView).apply {
                     text = label(r)
                     setTypeface(null, if (r is String && r.startsWith(ALL_PREFIX)) Typeface.BOLD else Typeface.NORMAL)
@@ -1111,7 +1168,8 @@ class MainActivity : Activity() {
                         if (query.isEmpty() && anchorKey == null) anchorKey = selKey
                         query = q
                         build()
-                        select(selKey)
+                        select(null) // on the first result
+                        reset.visibility = if (field.text.isEmpty()) View.GONE else View.VISIBLE
                     }
                 })
                 setOnEditorActionListener { _, _, _ ->
@@ -1123,9 +1181,12 @@ class MainActivity : Activity() {
                     if (rows.none { !isHeader(it) }) clearSearch() else focusList()
                 }
             }
-            box.addView(field, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+            val fieldRow = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            fieldRow.addView(field, LinearLayout.LayoutParams(0, -2, 1f))
+            fieldRow.addView(reset, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) })
+            box.addView(fieldRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
             box.addView(text(12f, Color.parseColor("#9AD4FF")).apply {
-                text = "OK: attiva/disattiva (salvato subito)  ·  ☰ cerca  ·  Indietro: annulla la ricerca, poi chiude"
+                text = "OK: attiva/disattiva (salvato subito)  ·  ☰ ricerca ⇄ elenco  ·  ⏪ ⏩ pagina  ·  ⏯ inizio/fine  ·  Indietro: annulla la ricerca, poi chiude"
             }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
             list.adapter = adapter
             list.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -1143,13 +1204,21 @@ class MainActivity : Activity() {
                 when {
                     code == KeyEvent.KEYCODE_MENU -> {
                         if (e.action == KeyEvent.ACTION_UP) {
-                            field.requestFocus()
-                            ui.postDelayed({
-                                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
-                            }, 150)
+                            if (field.hasFocus()) {
+                                (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(field.windowToken, 0)
+                                focusList()
+                            } else {
+                                field.requestFocus()
+                                ui.postDelayed({
+                                    (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
+                                }, 150)
+                            }
                         }
                         true
                     }
+                    list.hasFocus() && e.action == KeyEvent.ACTION_DOWN && code == KeyEvent.KEYCODE_MEDIA_REWIND -> { page(-1); true }
+                    list.hasFocus() && e.action == KeyEvent.ACTION_DOWN && code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> { page(1); true }
+                    list.hasFocus() && e.action == KeyEvent.ACTION_DOWN && code == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { startOrEnd(); true }
                     code == KeyEvent.KEYCODE_BACK -> {
                         if (e.action == KeyEvent.ACTION_UP) {
                             if (field.text.isNotEmpty()) clearSearch() else dialog.dismiss()
@@ -1163,10 +1232,16 @@ class MainActivity : Activity() {
                     else -> false
                 }
             }
-            dialog.setOnDismissListener { if (chosen != before) reloadSources() }
+            dialog.setOnDismissListener {
+                // the search and the place stay for the next time the screen is opened
+                listsQuery = field.text.toString(); listsSel = selKey; listsAnchor = anchorKey
+                if (chosen != before) reloadSources()
+            }
             build()
             // start on the first active list (or the first row)
-            select(rows.firstOrNull { it is String && it.startsWith(ACTIVE_PREFIX) }?.let { key(it) })
+            anchorKey = listsAnchor
+            if (listsQuery.isNotEmpty()) field.setText(listsQuery)
+            select(listsSel ?: rows.firstOrNull { it is String && it.startsWith(ACTIVE_PREFIX) }?.let { key(it) })
             dialog.show()
             dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.62).toInt(), (resources.displayMetrics.heightPixels * 0.92).toInt())
             dialog.window?.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
@@ -1292,11 +1367,14 @@ class MainActivity : Activity() {
         setOnClickListener { onClick() }
     }
 
-    /** Orange highlight only in the column that has focus; the other one keeps a faint mark on its row. */
+    /**
+     * Highlight of the focused row: lighter slate with a thick orange frame, so white text stays readable; a list
+     * without focus keeps a faint mark on its row.
+     */
     private fun listView() = ListView(this).apply {
         selector = StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_focused), GradientDrawable().apply {
-                setColor(Color.parseColor("#FF8A00")); cornerRadius = dp(6).toFloat(); setStroke(dp(2), Color.WHITE)
+                setColor(Color.parseColor("#3D5370")); cornerRadius = dp(6).toFloat(); setStroke(dp(3), Color.parseColor("#FF8A00"))
             })
             addState(intArrayOf(), GradientDrawable().apply {
                 setColor(Color.parseColor("#26FFFFFF")); cornerRadius = dp(6).toFloat()
@@ -1373,24 +1451,21 @@ class MainActivity : Activity() {
         }
         header = text(20f, bold = true)
         settings.addView(header, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })
-        modeButton = button("Guida TV") { setMode(!guideMode); focusChannels() }
         listButton = button("Elenchi") { chooseLists() }
         val item = { LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) } }
         for (b in listOf(
-            button("Cerca") { openSearch() },
-            button("Cartelle") { chooseFolder() },
-            modeButton,
             listButton,
             button("Aggiorna") { loadList(refresh = true); updateEpg(force = true) },
             button("Azzera visti") { resetStats() },
+            button("Esci") { finish() },
         )) {
             val own = b.onFocusChangeListener
             b.setOnFocusChangeListener { v, f -> own?.onFocusChange(v, f); if (f) lastSetting = v }
             settings.addView(b, item())
         }
         settings.addView(text(12f, Color.parseColor("#888888")).apply {
-            isSingleLine = false; maxLines = 9
-            text = "▶ o Indietro: torna all'elenco\n\nNell'elenco:\nOK tenuto: ♥ preferito sì/no\n☰ cerca · ◀ impostazioni\n⏪ ⏩ cartella prec./succ.\nIndietro: annulla la ricerca"
+            isSingleLine = false; maxLines = 12
+            text = "▶ o Indietro: torna all'elenco\n\nNell'elenco:\nOK tenuto: ♥ preferito sì/no\n☰ ricerca ⇄ elenco\n⏪ ⏩ pagina su / giù\n⏯ inizio / fine elenco\n◀ queste impostazioni\nIndietro: annulla la ricerca"
         }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
         panel.addView(settings, FrameLayout.LayoutParams(dp(210), -1, Gravity.START).apply {
             setMargins(dp(16), dp(16), 0, dp(16))
@@ -1401,8 +1476,16 @@ class MainActivity : Activity() {
             background = box()
             setPadding(dp(20), dp(18), dp(20), dp(12))
         }
-        listTitle = text(19f, bold = true).apply { text = "Canali" }
-        chan.addView(listTitle)
+        // top row: the two views as tabs (the one on show is filled), then the lists on
+        tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        tabChannels = button("Canali") { setMode(false); focusChannels() }
+        tabGuide = button("Guida TV (programmi)") { setMode(true); focusChannels() }
+        tabs.addView(tabChannels, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(8) })
+        tabs.addView(tabGuide, LinearLayout.LayoutParams(-2, -2).apply { rightMargin = dp(14) })
+        listTitle = text(13f, Color.parseColor("#AAAAAA")).apply { gravity = Gravity.END }
+        tabs.addView(listTitle, LinearLayout.LayoutParams(0, -2, 1f))
+        chan.addView(tabs)
+        updateTabs()
         search = SearchField(this).apply {
             hint = "Cerca canale, programma o cartella  (☰ dal telecomando)"
             setHintTextColor(Color.parseColor("#88FFFFFF"))
@@ -1443,7 +1526,12 @@ class MainActivity : Activity() {
                 if (firstRow() >= 0) focusChannels() else if (current != null) hidePanel() else finish()
             }
         }
-        chan.addView(search, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
+        // search field and, while a search is on, ✕ to clear it (back to the place before the search)
+        val searchRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        searchRow.addView(search, LinearLayout.LayoutParams(0, -2, 1f))
+        resetButton = button("✕ Azzera ricerca") { resetSearch(); focusChannels() }.apply { visibility = View.GONE }
+        searchRow.addView(resetButton, LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) })
+        chan.addView(searchRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
         status = text(13f, Color.parseColor("#9AD4FF"))
         chan.addView(status, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
 
@@ -1456,7 +1544,6 @@ class MainActivity : Activity() {
                     val r = items.getOrNull(pos) as? Row ?: return
                     chanPos = pos; chanTop = v?.top ?: 0
                     sel = posOf(r)
-                    if (hits != null && sel != resultStart) movedInResults = true
                 }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
@@ -1471,7 +1558,6 @@ class MainActivity : Activity() {
             setOnItemClickListener { _, v, pos, _ ->
                 val r = items.getOrNull(pos) as? Row ?: return@setOnItemClickListener
                 chanPos = pos; chanTop = v?.top ?: 0; sel = posOf(r)
-                if (hits != null) movedInResults = true
                 play(r.ch); hidePanel()
             }
         }
@@ -1578,6 +1664,42 @@ class MainActivity : Activity() {
         const val ALL_PREFIX = "\u0002"
         const val CUSTOM_ROW = "\u0003custom"
     }
+}
+
+/** Checkbox of the lists screen: empty white square, or green square with a white tick. */
+class CheckDrawable(private val on: Boolean, private val density: Float) : android.graphics.drawable.Drawable() {
+    private val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG)
+
+    override fun draw(canvas: android.graphics.Canvas) {
+        val b = bounds
+        val w = 2 * density
+        val r = android.graphics.RectF(b.left + w / 2, b.top + w / 2, b.right - w / 2, b.bottom - w / 2)
+        if (on) {
+            paint.style = android.graphics.Paint.Style.FILL
+            paint.color = Color.parseColor("#2FB45A")
+            canvas.drawRoundRect(r, 3 * density, 3 * density, paint)
+            paint.style = android.graphics.Paint.Style.STROKE
+            paint.strokeWidth = 2.6f * density
+            paint.strokeCap = android.graphics.Paint.Cap.ROUND
+            paint.strokeJoin = android.graphics.Paint.Join.ROUND
+            paint.color = Color.WHITE
+            val p = android.graphics.Path()
+            p.moveTo(r.left + r.width() * 0.22f, r.top + r.height() * 0.52f)
+            p.lineTo(r.left + r.width() * 0.43f, r.top + r.height() * 0.72f)
+            p.lineTo(r.left + r.width() * 0.80f, r.top + r.height() * 0.30f)
+            canvas.drawPath(p, paint)
+        } else {
+            paint.style = android.graphics.Paint.Style.STROKE
+            paint.strokeWidth = w
+            paint.color = Color.parseColor("#CCFFFFFF")
+            canvas.drawRoundRect(r, 3 * density, 3 * density, paint)
+        }
+    }
+
+    override fun setAlpha(alpha: Int) {}
+    override fun setColorFilter(cf: android.graphics.ColorFilter?) {}
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
 }
 
 /** Search box: Back closes the Fire TV keyboard (it does not close by itself) and leaves the field. */

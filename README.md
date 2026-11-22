@@ -12,35 +12,36 @@ Samsung TV Plus, regionali…), riscritta in Kotlin. Il player è ExoPlayer (HLS
 | Tasto | Video a schermo intero | Pannello aperto |
 |---|---|---|
 | ▲ ▼, CH+ CH− | canale precedente / successivo (e riquadro col programma) | si muove nell'elenco |
-| OK, ◀ | apre il pannello **canali** | OK guarda il canale |
+| OK, ◀ | apre il pannello (◀: vista **Canali**) | OK guarda il canale |
 | OK tenuto premuto | ♥ preferito sì / no per il canale in onda | ♥ preferito sì / no per il canale selezionato |
-| ▶, ⏩ | apre la **Guida TV** (programmi in onda) | nell'elenco ⏪ ⏩ = cartella precedente / successiva |
-| ≡ Menu | **ricerca**: pannello aperto e tastiera nel campo Cerca | idem, l'elenco resta dov'era |
+| ▶, ⏩ | apre la **Guida TV** (programmi in onda) | nell'elenco ⏪ ⏩ = **pagina su / giù** |
+| ⏯ | ricarica il canale | nell'elenco: **inizio / fine** dell'elenco |
+| ≡ Menu | **ricerca**: pannello aperto e tastiera nel campo Cerca | dall'elenco al campo di ricerca e, ripremuto, di nuovo nell'elenco |
 | ≡ Menu tenuto premuto | **riscarica gli elenchi** | idem |
 | ◀ / ▶ | | dall'elenco ◀ va alle **impostazioni** (colonna a sinistra), ▶ torna sul canale lasciato |
-| ▲ sul primo canale | | campo di ricerca; ▼ torna nell'elenco |
+| ▲ in cima all'elenco | | campo di ricerca, poi i due pulsanti **Canali / Guida TV**; ▼ torna nell'elenco |
 | 0–9 | numero del canale (LCN) | idem |
-| Indietro | chiude il riquadro; due volte per uscire | tastiera aperta: la chiude e torna nell'elenco (ricerca tenuta); con una ricerca attiva: la **annulla** e torna dov'eri; altrimenti chiude il pannello |
-| ⏯ | ricarica il canale | |
+| Indietro | chiude il riquadro; due volte per uscire | tastiera aperta: la chiude e torna nell'elenco (ricerca tenuta); con una ricerca attiva: la **annulla** e torna dov'eri prima di cercare; altrimenti chiude il pannello |
 
-- **Pannello**: a sinistra dello schermo la colonna **impostazioni** (Cerca, Cartelle, Guida TV, Elenchi, Aggiorna,
-  Azzera visti), a destra l'**elenco** dei canali con il campo di ricerca in cima; in mezzo resta visibile il video.
-  L'elenco è **unico**: in cima *★ Più guardati*, poi tutti i canali con dei piccoli **divisori di cartella**
-  («elenco › gruppo» e numero di canali); ogni canale riporta anche la sua cartella a destra del nome, così si sa
-  dove si è anche a metà cartella. I più guardati compaiono di nuovo più sotto, al loro posto. *Cartelle* apre
-  l'indice delle cartelle per saltare direttamente a una.
+- **Pannello**: a sinistra dello schermo la colonna **impostazioni** (Elenchi, Aggiorna, Azzera visti, Esci); a
+  destra in alto i due pulsanti **Canali** e **Guida TV (programmi)** (quello attivo è pieno e col pallino), il
+  campo di ricerca con **✕ Azzera ricerca** e sotto l'**elenco**; in mezzo resta visibile il video.
+  L'elenco è **unico**: in cima *♥ Preferiti* e *★ Più guardati*, poi tutti i canali con dei piccoli **divisori di
+  cartella** («elenco › gruppo» e numero di canali); ogni canale riporta anche la sua cartella a destra del nome, così
+  si sa dove si è anche a metà cartella. Preferiti e più guardati compaiono di nuovo più sotto, al loro posto.
 - **Ricerca**: cerca nel nome, nel numero, nel **programma in onda** e nella **cartella** (elenco, gruppo, categoria).
-  Si apre con ≡ da qualunque punto senza perdere la posizione: se il canale su cui eri è tra i risultati resta
-  selezionato, e Indietro (o cancellare il testo) rimette tutto l'elenco **sul punto dove eri**, oppure sul risultato
-  su cui ti sei spostato o che hai guardato. La ricerca resta attiva chiudendo e riaprendo il pannello finché non la
-  annulli.
+  OK (o «Vai») sulla tastiera **non avvia nulla**: chiude la tastiera e porta sul primo risultato. La ricerca
+  **resta attiva**: guardi un canale, riapri il pannello e trovi ancora l'elenco filtrato, sul canale dove eri, finché
+  non premi Indietro o **✕ Azzera ricerca**; allora torna tutto l'elenco **sul punto dove eri prima di cercare**.
+  Canali e Guida TV hanno ognuno la sua ricerca e la sua posizione, tenute quando si passa dall'una all'altra.
 - **Elenchi**: una sola schermata con **tutti gli elenchi**: in cima gli *Attivi*, poi le sezioni come nell'addon:
   *Liste WLTV* (DTT, Vari, Regionali, Radio, Pluto TV, Samsung TV, Rakuten, WeDoTv…), *TV dal mondo* (un elenco per
   paese, liste iptv-org), *Webcam* (SkylineWebcams per paese) e *Radio dal mondo* (per paese), ognuna con la riga
   *Tutti*, e in fondo l'**URL personalizzato** di una lista M3U. OK attiva o disattiva e **salva subito** (nessun
   pulsante di conferma). ≡ apre la **ricerca** (anche a voce: «Francia», «webcam Italia»), *Tutti* vale per quelli
   trovati; Indietro annulla la ricerca e torna sulla riga dove eri, Indietro ancora chiude e i canali si
-  ricaricano. Si possono attivare **più elenchi insieme**. Il predefinito è *DTT*. I canali di tutti gli elenchi attivi finiscono
+  ricaricano. Ricerca e posizione restano per la volta dopo; ✕ o Indietro azzerano la ricerca e tornano sulla
+  riga dove eri. ⏪ ⏩ pagina, ⏯ inizio/fine, ≡ passa tra ricerca ed elenco. Si possono attivare **più elenchi insieme**. Il predefinito è *DTT*. I canali di tutti gli elenchi attivi finiscono
   in un'unica lista, divisa in cartelle per elenco e per gruppo, ognuna con il **numero di canali**.
   Gli elenchi restano in memoria e funzionano anche senza rete; si riscaricano tenendo premuto ≡ e da soli dopo un giorno.
 - **Guida programmi**: la guida EPG di WLTV (`epg-guide.com/wltv.xz`, la stessa dell'addon) viene scaricata e letta
